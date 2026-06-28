@@ -36,8 +36,15 @@ LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor.log
 # 运行时自动获取自己的路径（兼容打包后）
 if getattr(sys, 'frozen', False):
     SELF_PATH = sys.executable
+    _BASE_DIR = sys._MEIPASS
 else:
     SELF_PATH = os.path.abspath(__file__)
+    _BASE_DIR = os.path.dirname(SELF_PATH)
+
+
+def _resolve_path(relative_path: str) -> str:
+    """解析资源文件路径（兼容 PyInstaller 打包）"""
+    return os.path.join(_BASE_DIR, relative_path)
 
 
 def log(msg: str):
@@ -440,6 +447,10 @@ class Daemon:
         self._root = tk.Tk()
         self._root.withdraw()
         self._root.title("LeiShenMonitor")
+        try:
+            self._root.iconbitmap(_resolve_path("tu.ico"))
+        except Exception:
+            pass
         _ROOT = self._root
         self._hwnd = self._root.winfo_id()
 
@@ -575,6 +586,13 @@ def gui_main():
     root = tk.Tk()
     root.title("雷神加速器 - 时长监控助手")
     root.resizable(False, False)
+
+    # 窗口图标
+    try:
+        ico_path = _resolve_path("tu.ico")
+        root.iconbitmap(ico_path)
+    except Exception:
+        pass
 
     # 窗口居中
     w, h = 380, 280
