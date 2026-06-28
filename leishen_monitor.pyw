@@ -502,9 +502,24 @@ class Daemon:
 # ============================================================
 def _create_message_window() -> int:
     """创建纯 Win32 隐藏消息窗口"""
+    # 手动定义 WNDCLASSW（Python 3.14 从 ctypes.wintypes 中移除了）
+    class WNDCLASSW(ctypes.Structure):
+        _fields_ = [
+            ("style", ctypes.wintypes.UINT),
+            ("lpfnWndProc", _WNDPROC),
+            ("cbClsExtra", ctypes.c_int),
+            ("cbWndExtra", ctypes.c_int),
+            ("hInstance", ctypes.wintypes.HINSTANCE),
+            ("hIcon", ctypes.wintypes.HICON),
+            ("hCursor", ctypes.wintypes.HCURSOR),
+            ("hbrBackground", ctypes.wintypes.HBRUSH),
+            ("lpszMenuName", ctypes.wintypes.LPCWSTR),
+            ("lpszClassName", ctypes.wintypes.LPCWSTR),
+        ]
+
     hinst = kernel32.GetModuleHandleW(None)
     wnd_class = ctypes.create_unicode_buffer("LeiShenDaemon")
-    wc = ctypes.wintypes.WNDCLASSW()
+    wc = WNDCLASSW()
     wc.lpfnWndProc = _daemon_wndproc_ref
     wc.hInstance = hinst
     wc.lpszClassName = ctypes.addressof(wnd_class)
