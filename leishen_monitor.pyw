@@ -762,6 +762,48 @@ def main():
             print("leigod.exe: NOT RUNNING")
         sys.exit(0)
 
+    # --test: 开发测试菜单（中文 GUI）
+    if "--test" in sys.argv:
+        import tkinter as tk
+        import tkinter.messagebox as mb
+        import subprocess as sp
+        t = tk.Tk()
+        t.title("雷神监控 - 开发测试")
+        t.geometry("300x220")
+        t.resizable(False, False)
+        try:
+            t.iconbitmap(_resolve_path("tu.ico"))
+        except Exception:
+            pass
+        tk.Label(t, text="雷神加速器监控 - 开发测试", font=("Microsoft YaHei UI", 11, "bold")).pack(pady=10)
+
+        def run_gui():
+            t.destroy()
+            gui_main()
+
+        def run_daemon():
+            t.destroy()
+            daemon = Daemon()
+            try:
+                daemon.run()
+            except KeyboardInterrupt:
+                pass
+            finally:
+                daemon.stop()
+
+        def run_check():
+            if is_accelerator_running():
+                mb.showinfo("检测结果", "leigod.exe: 运行中", parent=t)
+            else:
+                mb.showinfo("检测结果", "leigod.exe: 未运行", parent=t)
+
+        tk.Button(t, text="运行 GUI 管理界面", command=run_gui, width=24, height=2).pack(pady=3)
+        tk.Button(t, text="运行 daemon (控制台)", command=run_daemon, width=24, height=2).pack(pady=3)
+        tk.Button(t, text="检测加速器是否运行", command=run_check, width=24, height=2).pack(pady=3)
+        tk.Label(t, text="daemon 模式请用 Ctrl+C 停止", font=("Microsoft YaHei UI", 8), fg="gray").pack(pady=5)
+        t.mainloop()
+        sys.exit(0)
+
     # 单实例保护（仅 GUI 模式）
     mutex = kernel32.CreateMutexW(None, False, "Global\\LeiShenAcceleratorMonitorGUI")
     if kernel32.GetLastError() == 183:
