@@ -1,49 +1,69 @@
-# 雷神加速器 · 时长监控助手
+# LeiShenMonitor
 
-> 再也不会忘记暂停加速时长了！
+雷神加速器进程监控 + 关机拦截 daemon。
 
-一个轻量级的 Windows 后台工具，解决**雷神加速器退出后忘记暂停时长**导致时长空跑的痛点。
+## 架构
 
----
+```
+test.bat → test.ps1 → pythonw gui_main()     # GUI管理面板 (安装/停止/卸载)
+                              ↓
+              schtasks ONLOGON → pythonw --daemon  # 后台守护进程
+```
 
-## 功能
+- **GUI**: tkinter, 仅管理用, 关闭不影响监控
+- **Daemon**: schtasks 注册, `ONLOGON` 触发, 无控制台, 1x1透明窗口接收 `WM_QUERYENDSESSION`
+- **通信**: PID 文件 (`.daemon.pid`) 用于卸载时精确定位进程
 
-| 功能 | 说明 |
+## 进程监控
+
+```
+CreateToolhelp32Snapshot → 枚举 leigod.exe PID
+        ↓
+OpenProcess(SYNCHRONIZE) → 打开进程句柄
+        ↓
+WaitForMultipleObjects → 内核级阻塞等待退出, CPU=0
+        ↓
+MessageBoxW(MB_TOPMOST) → 置顶弹窗
+```
+
+- 未找到进程: 每3s `CreateToolhelp32Snapshot` 重扫 (微秒级, 无子进程)
+- 找到进程后: `WaitForMultipleObjects` 阻塞 (零CPU)
+- 全屏中加速器退出: 暂缓弹窗, `_accel_exit_pending` 标记, 全屏退出后补弹
+
+## 全屏检测
+
+`is_fullscreen_window()`: `GetWindowRect` == `MonitorFromWindow` 尺寸, 覆盖无边框全屏与独占全屏。WinEvent hook 监听 `EVENT_SYSTEM_FOREGROUND` + `EVENT_OBJECT_DESTROY`。
+
+## 关机拦截
+
+```
+WM_TIMER(30s) → is_accelerator_running()
+    ├─ true  → ShutdownBlockReasonCreate(hwnd, reason)
+    └─ false → ShutdownBlockReasonDestroy(hwnd)
+
+WM_QUERYENDSESSION
+    ├─ _shutdown_blocked_this_session → return 1 (放行)
+    └─ 弹窗 MB_YESNO → IDYES=return 0(阻止), IDNO=return 1(放行)
+```
+
+每开机周期仅拦截一次。窗口 `WS_EX_LAYERED|WS_EX_TRANSPARENT`, `SetLayeredWindowAttributes(alpha=1)`, 完全透明+鼠标穿透。
+
+## 入口
+
+| 参数 | 行为 |
 |------|------|
-| 加速器退出提醒 | 雷神加速器退出时弹窗提醒暂停时长 |
-| 全屏程序退出提醒 | 全屏时不打扰，退出全屏后才弹窗提醒 |
-| 关机拦截 | 加速器后台运行时关机，拦截一次并弹窗确认 |
-| 图形化管理 | 双击即出管理界面，一键安装 / 停止 / 卸载 |
+| *(无)* | GUI 管理面板 |
+| `--daemon` | 守护进程 (schtasks 调用) |
+| `--console` | 控制台交互 (1启用/2停止/3卸载) |
+| `--gui-action install\|stop\|uninstall` | 提权后自动执行, 然后进入 GUI |
+| `--check` | 输出 leigod.exe 进程状态 |
 
-### 行为说明
+## 环境变量
 
-- **加速器退出提醒**：加速器从运行变为不运行时弹窗
-- **全屏退出提醒**：全屏运行时不会弹任何窗口，退出全屏后才提醒（5 秒冷却）
-- **关机拦截**：每个开机周期仅拦截一次。点"是"取消关机，点"否"放行
+`LEISHEN_PROCESS_NAMES`: 逗号分隔进程名, 默认 `leigod.exe`
 
-## 下载使用
-
-1. 从 [Releases](../../releases/latest) 下载 `LeiShenMonitor.exe`
-2. 双击运行，首次自动引导安装
-3. 安装后开机自启，后台静默运行
-
-## 自定义进程名
-
-当前监控的进程为 `leigod.exe`。如果加速器更新了进程名，可通过环境变量修改（无需重编译）：
-
-```
-LEISHEN_PROCESS_NAMES=新进程名.exe
-```
-
-多个进程用逗号分隔，设置后重启监控服务即可。
-
-如需重新编译：
+## 打包
 
 ```bash
-pip install pyinstaller
-pyinstaller --onefile --windowed --name "LeiShenMonitor" leishen_monitor.pyw
+pyinstaller --onefile --windowed --name LeiShenMonitor leishen_monitor.pyw
 ```
-
-## License
-
-MIT

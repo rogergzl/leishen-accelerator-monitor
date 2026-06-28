@@ -1,3 +1,3 @@
 @echo off
 cd /d "%~dp0"
-python "%~dp0leishen_monitor.pyw"
+powershell -ExecutionPolicy Bypass -File "%~dp0test.ps1"

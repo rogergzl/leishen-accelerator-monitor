@@ -76,6 +76,23 @@ user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
 WM_QUERYENDSESSION = 0x0011
 
+# kernel32: 进程监控
+CreateToolhelp32Snapshot = kernel32.CreateToolhelp32Snapshot
+CreateToolhelp32Snapshot.argtypes = [ctypes.wintypes.DWORD, ctypes.wintypes.DWORD]
+CreateToolhelp32Snapshot.restype = ctypes.wintypes.HANDLE
+
+Process32FirstW = kernel32.Process32FirstW
+Process32FirstW.argtypes = [ctypes.wintypes.HANDLE, ctypes.c_void_p]
+Process32FirstW.restype = ctypes.wintypes.BOOL
+
+Process32NextW = kernel32.Process32NextW
+Process32NextW.argtypes = [ctypes.wintypes.HANDLE, ctypes.c_void_p]
+Process32NextW.restype = ctypes.wintypes.BOOL
+
+WaitForMultipleObjects = kernel32.WaitForMultipleObjects
+WaitForMultipleObjects.argtypes = [ctypes.wintypes.DWORD, ctypes.c_void_p, ctypes.wintypes.BOOL, ctypes.wintypes.DWORD]
+WaitForMultipleObjects.restype = ctypes.wintypes.DWORD
+
 ShutdownBlockReasonCreate = user32.ShutdownBlockReasonCreate
 ShutdownBlockReasonCreate.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.LPCWSTR]
 ShutdownBlockReasonCreate.restype = ctypes.wintypes.BOOL
@@ -83,6 +100,10 @@ ShutdownBlockReasonCreate.restype = ctypes.wintypes.BOOL
 ShutdownBlockReasonDestroy = user32.ShutdownBlockReasonDestroy
 ShutdownBlockReasonDestroy.argtypes = [ctypes.wintypes.HWND]
 ShutdownBlockReasonDestroy.restype = ctypes.wintypes.BOOL
+
+SetLayeredWindowAttributes = user32.SetLayeredWindowAttributes
+SetLayeredWindowAttributes.argtypes = [ctypes.wintypes.HWND, ctypes.wintypes.COLORREF, ctypes.c_byte, ctypes.wintypes.DWORD]
+SetLayeredWindowAttributes.restype = ctypes.wintypes.BOOL
 
 EVENT_SYSTEM_FOREGROUND = 0x0003
 EVENT_OBJECT_DESTROY = 0x8001
@@ -125,6 +146,7 @@ def is_accelerator_running() -> bool:
         result = subprocess.run(
             ["tasklist", "/fi", "STATUS eq RUNNING", "/fo", "csv", "/nh"],
             capture_output=True, text=True, timeout=5,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
         for line in result.stdout.lower().splitlines():
             for name in PROCESS_NAMES:
@@ -226,54 +248,146 @@ def show_shutdown_block(reason: str = "") -> bool:
 
 
 # ============================================================
-# Daemon: WMI 进程监听
+# Daemon: 进程句柄监听（WaitForMultipleObjects，零轮询零日志污染）
 # ============================================================
-class WMIWatcher:
+SCAN_INTERVAL = 3  # 没找到进程时重新扫描的间隔（秒）
+
+
+class ProcessWatcher:
+    """用 WaitForMultipleObjects 等待进程退出，零CPU零轮询"""
+
     def __init__(self, names, on_exit):
-        self._names = names
+        self._names = [n.lower() for n in names]
         self._cb = on_exit
         self._running = False
         self._last = 0.0
 
     def start(self):
         self._running = True
+        # 初始扫描
+        all_pids = []
+        for name in self._names:
+            all_pids.extend(self._find_pids(name))
+        if all_pids:
+            log(f"进程监控就绪 (句柄等待), 已发现目标: PID={all_pids}")
+        else:
+            log(f"进程监控就绪 (句柄等待), 目标未运行, 目标: {self._names}")
         t = threading.Thread(target=self._run, daemon=True)
         t.start()
 
     def stop(self):
         self._running = False
 
-    def _run(self):
-        import pythoncom
-        import win32com.client
-        pythoncom.CoInitialize()
+    @staticmethod
+    def _find_pids(name: str) -> list:
+        """通过 toolhelp snapshot 查找进程 PID 列表"""
+        pids = []
         try:
-            locator = win32com.client.Dispatch("WbemScripting.SWbemLocator")
-            wmi = locator.ConnectServer(".", "root\\cimv2")
-            conds = " OR ".join(f"TargetInstance.ProcessName = '{n}'" for n in self._names)
-            q = f"SELECT * FROM Win32_ProcessStopTrace WHERE ({conds})"
-            events = wmi.ExecNotificationQuery(q)
-            log("WMI 就绪")
-            while self._running:
-                try:
-                    evt = events.NextEvent(1000)
-                    if evt is None:
-                        continue
-                    name = evt.Properties_["ProcessName"].Value
-                    log(f"进程退出: {name}")
+            TH32CS_SNAPPROCESS = 0x00000002
+            h = kernel32.CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS, 0)
+            if h == -1:
+                return pids
+
+            class PROCESSENTRY32W(ctypes.Structure):
+                _fields_ = [
+                    ("dwSize", ctypes.wintypes.DWORD),
+                    ("cntUsage", ctypes.wintypes.DWORD),
+                    ("th32ProcessID", ctypes.wintypes.DWORD),
+                    ("th32DefaultHeapID", ctypes.POINTER(ctypes.wintypes.ULONG)),
+                    ("th32ModuleID", ctypes.wintypes.DWORD),
+                    ("cntThreads", ctypes.wintypes.DWORD),
+                    ("th32ParentProcessID", ctypes.wintypes.DWORD),
+                    ("pcPriClassBase", ctypes.c_long),
+                    ("dwFlags", ctypes.wintypes.DWORD),
+                    ("szExeFile", ctypes.c_wchar * 260),
+                ]
+
+            pe = PROCESSENTRY32W()
+            pe.dwSize = ctypes.sizeof(PROCESSENTRY32W)
+
+            if kernel32.Process32FirstW(h, ctypes.byref(pe)):
+                while True:
+                    exe = pe.szExeFile.lower()
+                    if name.lower() in exe or exe == name.lower():
+                        pids.append(pe.th32ProcessID)
+                    if not kernel32.Process32NextW(h, ctypes.byref(pe)):
+                        break
+            kernel32.CloseHandle(h)
+        except Exception as e:
+            log(f"Process scan err: {e}")
+        return pids
+
+    def _run(self):
+        was_monitoring = False  # 避免重复日志
+        while self._running:
+            # 找到所有目标进程
+            all_pids = []
+            for name in self._names:
+                all_pids.extend(self._find_pids(name))
+
+            if not all_pids:
+                if was_monitoring:
+                    log(f"目标进程已全部退出，{SCAN_INTERVAL}s 后重扫")
+                    was_monitoring = False
+                # 没找到进程，等 SCAN_INTERVAL 秒再扫
+                for _ in range(SCAN_INTERVAL * 2):
+                    if not self._running:
+                        return
+                    time.sleep(0.5)
+                continue
+
+            if not was_monitoring:
+                log(f"监控 {len(all_pids)} 个目标进程 PID={all_pids}")
+                was_monitoring = True
+
+            # 打开进程句柄（只需 SYNCHRONIZE 权限）
+            handles = []
+            for pid in all_pids:
+                h = kernel32.OpenProcess(0x00100000, False, pid)  # SYNCHRONIZE
+                if h:
+                    handles.append((h, pid))
+                else:
+                    log(f"OpenProcess(PID={pid}) 失败, err={kernel32.GetLastError()}")
+
+            if not handles:
+                log(f"无法打开任何进程句柄, {SCAN_INTERVAL}s 后重试")
+                time.sleep(SCAN_INTERVAL)
+                continue
+
+            # 阻塞等待任意进程退出
+            try:
+                # WaitForMultipleObjects
+                arr = (ctypes.wintypes.HANDLE * len(handles))()
+                for i, (h, _) in enumerate(handles):
+                    arr[i] = h
+                ret = kernel32.WaitForMultipleObjects(
+                    len(handles), arr, False, 30000  # 30s 超时，避免死等
+                )
+                idx = ret - 0  # WAIT_OBJECT_0 = 0
+                if 0 <= idx < len(handles):
+                    _, pid = handles[idx]
+                    log(f"进程退出: PID={pid}")
+
+                    # 关闭所有句柄
+                    for h, _ in handles:
+                        kernel32.CloseHandle(h)
+
+                    # 通知
                     now = time.time()
                     if now - self._last > EXIT_COOLDOWN:
                         self._last = now
-                        self._cb(name)
-                except Exception as e:
-                    s = str(e)
-                    if "0x80043001" not in s and "timeout" not in s.lower():
-                        log(f"WMI err: {e}")
-                    time.sleep(0.5)
-        except Exception as e:
-            log(f"WMI init err: {e}")
-        finally:
-            pythoncom.CoUninitialize()
+                        self._cb(self._names[0])
+
+                    # 短暂等待后重扫
+                    time.sleep(1)
+                else:
+                    # 超时或其他，关闭句柄重扫
+                    for h, _ in handles:
+                        kernel32.CloseHandle(h)
+            except Exception as e:
+                log(f"Wait err: {e}")
+                for h, _ in handles:
+                    kernel32.CloseHandle(h)
 
 
 # ============================================================
@@ -372,25 +486,36 @@ class Daemon:
     def __init__(self):
         self._running = True
         self._shutdowning = False
-        self._shutdown_blocked_this_session = False  # 本开机周期内已拦截过一次
+        self._shutdown_blocked_this_session = False
         self._hwnd = 0
         self._wmi = None
         self._fs = None
         self._fs_just_exited = False
         self._fs_grace_until = 0.0
+        self._accel_exit_pending = False  # 全屏中加速器退出，待全屏退出后补弹窗
 
     def _on_accel_exit(self, name):
         log(f"加速器退出: {name}")
-        if not self._shutdowning:
-            threading.Thread(target=lambda: user32.MessageBoxW(0, "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！", "雷神加速器已退出", 0x30), daemon=True).start()
+        if self._fs and self._fs.active:
+            # 全屏中不弹窗，标记待处理
+            self._accel_exit_pending = True
+            log("全屏中，暂缓加速器退出弹窗")
+        elif not self._shutdowning:
+            threading.Thread(target=lambda: user32.MessageBoxW(0, "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！", "雷神加速器已退出", 0x40030), daemon=True).start()
 
     def _on_fs_exit(self, title):
         label = f"「{title}」" if title else "全屏程序"
         log(f"全屏退出: {label}")
         self._fs_just_exited = True
         self._fs_grace_until = time.time() + FULLSCREEN_GRACE
-        if not self._shutdowning:
-            threading.Thread(target=lambda: user32.MessageBoxW(0, f"检测到 {label} 已退出。\n\n雷神加速器的时长可能还在消耗中！\n别忘了暂停加速时长哦～", "全屏程序已退出", 0x30), daemon=True).start()
+
+        if self._accel_exit_pending:
+            # 全屏退出时补弹加速器退出提醒
+            self._accel_exit_pending = False
+            log("全屏退出，补弹加速器退出提醒")
+            threading.Thread(target=lambda: user32.MessageBoxW(0, "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！", "雷神加速器已退出", 0x40030), daemon=True).start()
+        elif not self._shutdowning:
+            threading.Thread(target=lambda: user32.MessageBoxW(0, f"检测到 {label} 已退出。\n\n雷神加速器的时长可能还在消耗中！\n别忘了暂停加速时长哦～", "全屏程序已退出", 0x40030), daemon=True).start()
 
     def _shutdown_hook(self):
         GWLP_WNDPROC = -4
@@ -423,7 +548,7 @@ class Daemon:
                         hwnd,
                         "检测到雷神加速器可能仍在后台消耗时长！\n\n点[是]取消关机，先去暂停加速时长\n点[否]我已暂停了，继续关机",
                         reason,
-                        0x24,  # MB_YESNO | MB_ICONQUESTION
+                        0x40024,  # MB_YESNO | MB_ICONQUESTION | MB_TOPMOST
                     )
                     self._shutdowning = False
                     if rc == 6:  # IDYES
@@ -461,9 +586,17 @@ class Daemon:
         _daemon_instance = self
         log(f"Daemon 启动, 加速器={'运行中' if is_accelerator_running() else '未运行'}")
 
+        # 写 PID 文件，供卸载时精确杀进程
+        try:
+            pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon.pid")
+            with open(pid_file, "w") as f:
+                f.write(str(os.getpid()))
+        except Exception:
+            pass
+
         self._fs = FullscreenWatcher(self._on_fs_exit)
         self._fs.start()
-        self._wmi = WMIWatcher(PROCESS_NAMES, self._on_accel_exit)
+        self._wmi = ProcessWatcher(PROCESS_NAMES, self._on_accel_exit)
         self._wmi.start()
 
         try:
@@ -526,9 +659,14 @@ def _create_message_window() -> int:
     user32.RegisterClassW(ctypes.byref(wc))
 
     hwnd = user32.CreateWindowExW(
-        0, wnd_class, "LeiShenDaemon", 0,
-        0, 0, 0, 0, None, None, hinst, None,
+        0x00000080 | 0x00080000 | 0x00000020,  # WS_EX_TOOLWINDOW | WS_EX_LAYERED | WS_EX_TRANSPARENT
+        wnd_class, "LeiShenDaemon", 0,
+        0, 0, 1, 1, None, None, hinst, None,
     )
+    if hwnd:
+        # 设置完全透明 + 鼠标穿透（点击直接穿过，不影响游戏）
+        SetLayeredWindowAttributes(hwnd, 0, 1, 0x00000002)  # LWA_ALPHA=2, alpha=1 几乎不可见
+        user32.ShowWindow(hwnd, 7)  # SW_SHOWMINIMIZED — ShutdownBlockReasonCreate 需要窗口"可见"
     return hwnd
 
 
@@ -565,26 +703,21 @@ def _message_pump():
 
 
 # ============================================================
-# GUI 管理界面
+# 服务管理接口（无 UI 依赖，返回结果 dict，GUI 和 console 共用）
 # ============================================================
-def _schtasks(*args) -> subprocess.CompletedProcess:
-    return subprocess.run(
-        ["schtasks"] + list(args),
-        capture_output=True, text=True,
-    )
+# 全局标志：当前是否在 console 模式（控制 log 是否同时输出到屏幕）
+_CONSOLE_MODE = False
 
 
-def _task_exists() -> bool:
-    return _schtasks("/query", "/tn", TASK_NAME).returncode == 0
-
-
-def _task_running() -> bool:
-    r = _schtasks("/query", "/tn", TASK_NAME, "/fo", "csv", "/v")
-    return "Running" in r.stdout
+def _print_log(msg: str):
+    """同时输出到控制台（console 模式下）和日志文件"""
+    if _CONSOLE_MODE:
+        print(msg)
+    log(msg)
 
 
 def _ensure_admin() -> bool:
-    """确保以管理员运行，否则用 ShellExecute runas 提权重启"""
+    """检查是否以管理员运行"""
     try:
         return ctypes.windll.shell32.IsUserAnAdmin() != 0
     except Exception:
@@ -599,63 +732,206 @@ def _relaunch_as_admin(action: str):
     sys.exit(0)
 
 
-def _run_schtask(action: str):
-    """执行计划任务管理操作"""
-    import tkinter.messagebox as mb
+def _schtasks(*args) -> subprocess.CompletedProcess:
+    return subprocess.run(
+        ["schtasks"] + list(args),
+        capture_output=True, text=True,
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
 
-    if action == "install":
-        existed = _task_exists()
-        if existed:
-            _schtasks("/delete", "/tn", TASK_NAME, "/f")
 
-        # 使用短路径避免 schtasks 编码中文路径时出错
-        safe_path = _short_path(SELF_PATH)
-        # 非打包模式需要用 pythonw 显式调用
-        if not getattr(sys, 'frozen', False):
-            import shutil
-            pyw = shutil.which("pythonw") or "pythonw"
-            cmd = f'"{pyw}" "{safe_path}" --daemon'
-        else:
-            cmd = f'"{safe_path}" --daemon'
-        r = _schtasks(
-            "/create", "/tn", TASK_NAME,
-            "/tr", cmd,
-            "/sc", "ONLOGON",
-            "/ru", os.environ.get("USERNAME", ""),
-            "/rl", "HIGHEST",
-            "/f",
+def service_status() -> dict:
+    """查询服务状态，返回 {exists, running, status_text}"""
+    exists = _schtasks("/query", "/tn", TASK_NAME).returncode == 0
+    running = False
+    if exists:
+        r = subprocess.run(
+            ["tasklist", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fo", "csv", "/nh"],
+            capture_output=True, text=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        if r.returncode != 0:
-            mb.showerror("启用失败", f"计划任务创建失败:\n{r.stderr.strip()}")
-            return "failed"
+        if "LeiShenMonitor" not in r.stdout:
+            r = subprocess.run(
+                ["tasklist", "/fi", "IMAGENAME eq pythonw.exe", "/fo", "csv", "/nh"],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            running = "pythonw" in r.stdout
+        else:
+            running = True
 
-        r2 = _schtasks("/run", "/tn", TASK_NAME)
-        if r2.returncode != 0:
-            mb.showwarning("部分成功", "计划任务已创建，但立即启动失败。\n重启电脑后会自动运行。")
-        return "installed"
+    if running:
+        status_text = "监控运行中"
+    elif exists:
+        status_text = "已注册但未运行"
+    else:
+        status_text = "未安装"
 
-    elif action == "stop":
-        _schtasks("/end", "/tn", TASK_NAME)
-        r = _schtasks("/change", "/tn", TASK_NAME, "/disable")
-        subprocess.run(["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"], capture_output=True)
-        subprocess.run(["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", "WINDOWTITLE eq LeiShenMonitor", "/f"], capture_output=True)
+    return {"exists": exists, "running": running, "status_text": status_text}
 
-        if r.returncode != 0:
-            mb.showerror("停止失败", "计划任务禁用失败，请尝试以管理员运行。")
-            return "failed"
-        return "stopped"
 
-    elif action == "uninstall":
-        _schtasks("/end", "/tn", TASK_NAME)
-        r = _schtasks("/delete", "/tn", TASK_NAME, "/f")
-        subprocess.run(["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"], capture_output=True)
-        subprocess.run(["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", "WINDOWTITLE eq LeiShenMonitor", "/f"], capture_output=True)
+def service_install() -> dict:
+    """注册并启动计划任务。返回 {success, message}"""
+    _print_log("=" * 50)
+    _print_log("[安装] 开始注册计划任务...")
 
-        if r.returncode != 0:
-            mb.showerror("卸载失败", "计划任务删除失败，请尝试以管理员运行。")
-            return "failed"
-        mb.showinfo("已卸载", "监控服务已完全卸载。")
-        return "uninstalled"
+    # 0. 检查管理员权限
+    if not _ensure_admin():
+        _print_log("[安装] 失败: 需要管理员权限")
+        return {"success": False, "message": "需要管理员权限，请以管理员身份运行。"}
+
+    # 1. 如果已存在，先删除
+    if _schtasks("/query", "/tn", TASK_NAME).returncode == 0:
+        _print_log("[安装] 检测到已有任务，先删除...")
+        r_del = _schtasks("/delete", "/tn", TASK_NAME, "/f")
+        if r_del.returncode != 0:
+            _print_log(f"[安装] 删除旧任务失败: {r_del.stderr.strip()}")
+            return {"success": False, "message": f"删除旧任务失败:\n{r_del.stderr.strip()}"}
+        _print_log("[安装] 旧任务已删除")
+
+    # 2. 构建启动命令
+    safe_path = _short_path(SELF_PATH)
+    if not getattr(sys, 'frozen', False):
+        import shutil
+        pyw = shutil.which("pythonw") or "pythonw"
+        cmd = f'"{pyw}" "{safe_path}" --daemon'
+        _print_log(f"[安装] 非打包模式，使用 pythonw: {pyw}")
+    else:
+        cmd = f'"{safe_path}" --daemon'
+    _print_log(f"[安装] 启动命令: {cmd}")
+
+    # 3. 创建计划任务
+    r = _schtasks(
+        "/create", "/tn", TASK_NAME,
+        "/tr", cmd,
+        "/sc", "ONLOGON",
+        "/ru", os.environ.get("USERNAME", ""),
+        "/rl", "HIGHEST",
+        "/f",
+    )
+    if r.returncode != 0:
+        _print_log(f"[安装] 创建计划任务失败: {r.stderr.strip()}")
+        return {"success": False, "message": f"计划任务创建失败:\n{r.stderr.strip()}"}
+    _print_log("[安装] 计划任务创建成功")
+
+    # 4. 立即启动
+    r2 = _schtasks("/run", "/tn", TASK_NAME)
+    if r2.returncode != 0:
+        _print_log(f"[安装] 立即启动失败: {r2.stderr.strip()}")
+        _print_log("[安装] 任务已注册，将在下次登录时自动启动")
+        return {"success": True, "message": "任务已注册，但立即启动失败。重启电脑后会自动运行。"}
+    _print_log("[安装] 任务已启动")
+
+    # 5. 等待并验证
+    _print_log("[安装] 等待进程启动...")
+    time.sleep(2)
+    status = service_status()
+    if status["running"]:
+        _print_log("[安装] 验证通过: 进程正在运行")
+        return {"success": True, "message": "服务已启用并正在运行。"}
+    else:
+        _print_log("[安装] 警告: 任务已创建但进程未检测到运行")
+        return {"success": True, "message": "任务已创建。如果未运行，请检查日志或重启电脑。"}
+
+
+def service_stop() -> dict:
+    """停止并禁用计划任务。返回 {success, message}"""
+    _print_log("=" * 50)
+    _print_log("[停止] 开始停止服务...")
+
+    if not _ensure_admin():
+        _print_log("[停止] 失败: 需要管理员权限")
+        return {"success": False, "message": "需要管理员权限，请以管理员身份运行。"}
+
+    # 1. 结束运行中的任务
+    r_end = _schtasks("/end", "/tn", TASK_NAME)
+    _print_log(f"[停止] 结束任务: {'成功' if r_end.returncode == 0 else '任务未运行或已结束'}")
+
+    # 2. 禁用任务
+    r = _schtasks("/change", "/tn", TASK_NAME, "/disable")
+    if r.returncode != 0:
+        _print_log(f"[停止] 禁用任务失败: {r.stderr.strip()}")
+        return {"success": False, "message": f"计划任务禁用失败:\n{r.stderr.strip()}"}
+    _print_log("[停止] 任务已禁用")
+
+    # 3. 通过 PID 文件杀 daemon 进程
+    try:
+        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon.pid")
+        if os.path.exists(pid_file):
+            with open(pid_file, "r") as f:
+                pid = int(f.read().strip())
+            _print_log(f"[停止] 杀掉 daemon 进程 PID={pid}")
+            kernel32 = ctypes.windll.kernel32
+            h = kernel32.OpenProcess(0x0001, False, pid)
+            if h:
+                kernel32.TerminateProcess(h, 0)
+                kernel32.CloseHandle(h)
+            os.remove(pid_file)
+    except Exception as e:
+        _print_log(f"[停止] PID 杀进程失败: {e}")
+
+    # 4. 兜底清理（排除自身进程）
+    _print_log("[停止] 清理残留进程（排除自身）")
+    subprocess.run(
+        ["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", f"PID ne {os.getpid()}", "/f"],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    subprocess.run(["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    _print_log("[停止] 残留进程已清理")
+
+    return {"success": True, "message": "服务已停止。"}
+
+
+def service_uninstall() -> dict:
+    """卸载计划任务。返回 {success, message}"""
+    _print_log("=" * 50)
+    _print_log("[卸载] 开始卸载服务...")
+
+    if not _ensure_admin():
+        _print_log("[卸载] 失败: 需要管理员权限")
+        return {"success": False, "message": "需要管理员权限，请以管理员身份运行。"}
+
+    # 1. 结束运行中的任务
+    _schtasks("/end", "/tn", TASK_NAME)
+    _print_log("[卸载] 已发送停止信号")
+
+    # 2. 通过 PID 文件精确杀掉 daemon 进程
+    try:
+        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon.pid")
+        if os.path.exists(pid_file):
+            with open(pid_file, "r") as f:
+                pid = int(f.read().strip())
+            _print_log(f"[卸载] 杀掉 daemon 进程 PID={pid}")
+            kernel32 = ctypes.windll.kernel32
+            h = kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+            if h:
+                kernel32.TerminateProcess(h, 0)
+                kernel32.CloseHandle(h)
+            os.remove(pid_file)
+    except Exception as e:
+        _print_log(f"[卸载] PID 杀进程失败: {e}")
+
+    # 3. 兜底：杀掉其他 pythonw.exe（排除自身）
+    _print_log("[卸载] 清理残留进程（排除自身）")
+    subprocess.run(
+        ["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", f"PID ne {os.getpid()}", "/f"],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    subprocess.run(
+        ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+    _print_log("[卸载] 残留进程已清理")
+
+    # 4. 删除计划任务
+    time.sleep(1)  # 等进程完全退出
+    r = _schtasks("/delete", "/tn", TASK_NAME, "/f")
+    if r.returncode != 0:
+        _print_log(f"[卸载] 删除任务失败: {r.stderr.strip()}")
+        return {"success": False, "message": f"计划任务删除失败:\n{r.stderr.strip()}"}
+    _print_log("[卸载] 任务已删除")
+
+    return {"success": True, "message": "监控服务已完全卸载。"}
 
 
 def gui_main():
@@ -735,25 +1011,10 @@ def gui_main():
 
     # ---- 刷新状态 ----
     def refresh_status():
-        exists = _task_exists()
-        running = False
-        if exists:
-            r = subprocess.run(
-                ["tasklist", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fo", "csv", "/nh"],
-                capture_output=True, text=True,
-            )
-            if "LeiShenMonitor" not in r.stdout:
-                r = subprocess.run(
-                    ["tasklist", "/fi", "IMAGENAME eq pythonw.exe", "/fo", "csv", "/nh"],
-                    capture_output=True, text=True,
-                )
-                running = "pythonw" in r.stdout
-            else:
-                running = True
-
-        if running:
+        s = service_status()
+        if s["running"]:
             set_status("监控运行中", green)
-        elif exists:
+        elif s["exists"]:
             set_status("已注册但未运行", yellow)
         else:
             set_status("未安装", red)
@@ -769,10 +1030,11 @@ def gui_main():
             _relaunch_as_admin("install")
             return
         set_status("⏳ 正在启用...", yellow)
-        result = _run_schtask("install")
-        if result == "installed":
+        result = service_install()
+        if result["success"]:
             refresh_after_delay(3)
         else:
+            mb.showerror("启用失败", result["message"])
             refresh_status()
 
     def do_stop():
@@ -780,10 +1042,11 @@ def gui_main():
             _relaunch_as_admin("stop")
             return
         set_status("⏳ 正在停止...", yellow)
-        result = _run_schtask("stop")
-        if result == "stopped":
+        result = service_stop()
+        if result["success"]:
             refresh_after_delay(1)
         else:
+            mb.showerror("停止失败", result["message"])
             refresh_status()
 
     def do_uninstall():
@@ -793,10 +1056,12 @@ def gui_main():
             _relaunch_as_admin("uninstall")
             return
         set_status("⏳ 正在卸载...", yellow)
-        result = _run_schtask("uninstall")
-        if result == "uninstalled":
+        result = service_uninstall()
+        if result["success"]:
+            mb.showinfo("已卸载", result["message"])
             refresh_status()
         else:
+            mb.showerror("卸载失败", result["message"])
             refresh_status()
 
     make_btn("启用服务", do_install, green)
@@ -814,7 +1079,8 @@ def gui_main():
     refresh_status()
 
     # 如果未安装，弹窗询问是否一键启用
-    if not _task_exists():
+    s = service_status()
+    if not s["exists"]:
         root.after(500, lambda: (
             mb.askyesno(
                 "首次使用",
@@ -827,9 +1093,81 @@ def gui_main():
 
 
 # ============================================================
+# 控制台管理界面
+# ============================================================
+def console_main():
+    """控制台交互式管理（--console）"""
+    global _CONSOLE_MODE
+    _CONSOLE_MODE = True
+
+    print("=" * 50)
+    print("  雷神加速器 · 时长监控助手 (控制台)")
+    print("=" * 50)
+
+    while True:
+        s = service_status()
+        print(f"\n当前状态: {s['status_text']}")
+        print("-" * 30)
+        print("  1. 启用服务（注册并启动）")
+        print("  2. 停止服务")
+        print("  3. 卸载服务")
+        print("  4. 查看日志（最后20行）")
+        print("  0. 退出")
+        print("-" * 30)
+
+        try:
+            choice = input("请选择 [0-4]: ").strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\n已退出。")
+            break
+
+        if choice == "1":
+            print("\n>>> 执行: 启用服务")
+            result = service_install()
+            print(f"\n{'[OK]' if result['success'] else '[FAIL]'} {result['message']}")
+
+        elif choice == "2":
+            print("\n>>> 执行: 停止服务")
+            result = service_stop()
+            print(f"\n{'[OK]' if result['success'] else '[FAIL]'} {result['message']}")
+
+        elif choice == "3":
+            confirm = input("\n确定要完全卸载监控服务吗？[y/N]: ").strip().lower()
+            if confirm != 'y':
+                print("已取消。")
+                continue
+            print("\n>>> 执行: 卸载服务")
+            result = service_uninstall()
+            print(f"\n{'[OK]' if result['success'] else '[FAIL]'} {result['message']}")
+
+        elif choice == "4":
+            print("\n--- monitor.log (最后20行) ---")
+            try:
+                with open(LOG_FILE, "r", encoding="utf-8") as f:
+                    lines = f.readlines()
+                    for line in lines[-20:]:
+                        print(f"  {line.rstrip()}")
+            except FileNotFoundError:
+                print("  (日志文件不存在)")
+            print("--- 结束 ---")
+
+        elif choice == "0":
+            print("已退出。")
+            break
+
+        else:
+            print("无效选择，请输入 0-4。")
+
+
+# ============================================================
 # 入口
 # ============================================================
 def main():
+    # --console: 控制台交互模式
+    if "--console" in sys.argv:
+        console_main()
+        sys.exit(0)
+
     # --gui-action: 提权后自动执行管理操作
     gui_action = None
     for arg in sys.argv[1:]:
@@ -841,7 +1179,6 @@ def main():
             break
 
     if gui_action:
-        # 提权执行的快速路径：执行操作 → 弹结果
         import tkinter as tk
         import tkinter.messagebox as mb
         if not _ensure_admin():
@@ -850,9 +1187,22 @@ def main():
             mb.showerror("权限不足", "需要管理员权限才能执行此操作。")
             t.destroy()
             sys.exit(1)
-        _run_schtask(gui_action)
+        # 使用新的 service 函数
+        if gui_action == "install":
+            result = service_install()
+        elif gui_action == "stop":
+            result = service_stop()
+        elif gui_action == "uninstall":
+            result = service_uninstall()
+        else:
+            result = {"success": False, "message": f"未知操作: {gui_action}"}
+
         if gui_action == "uninstall":
-            sys.exit(0)  # 卸载后直接退出
+            if result["success"]:
+                mb.showinfo("已卸载", result["message"])
+            else:
+                mb.showerror("卸载失败", result["message"])
+            sys.exit(0)
         # install/stop 后进入 GUI 显示状态
         gui_main()
         sys.exit(0)
@@ -865,20 +1215,7 @@ def main():
             print("leigod.exe: NOT RUNNING")
         sys.exit(0)
 
-    # 单实例保护（仅 GUI 模式）
-    mutex = kernel32.CreateMutexW(None, False, "Global\\LeiShenAcceleratorMonitorGUI")
-    if kernel32.GetLastError() == 183:
-        if "--daemon" in sys.argv:
-            kernel32.CloseHandle(mutex)
-            sys.exit(0)
-        import tkinter as tk
-        import tkinter.messagebox as mb
-        t = tk.Tk()
-        t.withdraw()
-        mb.showinfo("提示", "管理界面已在运行中，请查看任务栏！")
-        t.destroy()
-        sys.exit(0)
-
+    # --daemon: 后台监控（必须在互斥锁检查之前）
     if "--daemon" in sys.argv:
         daemon = Daemon()
         try:
@@ -887,8 +1224,21 @@ def main():
             pass
         finally:
             daemon.stop()
-    else:
-        gui_main()
+        sys.exit(0)
+
+    # 单实例保护（仅 GUI 模式）
+    mutex = kernel32.CreateMutexW(None, False, "Global\\LeiShenAcceleratorMonitorGUI")
+    if kernel32.GetLastError() == 183:
+        import tkinter as tk
+        import tkinter.messagebox as mb
+        t = tk.Tk()
+        t.withdraw()
+        mb.showinfo("提示", "管理界面已在运行中，请查看任务栏！")
+        t.destroy()
+        sys.exit(0)
+
+    # GUI 模式
+    gui_main()
 
     kernel32.CloseHandle(mutex)
 
