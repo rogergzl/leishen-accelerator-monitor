@@ -545,9 +545,16 @@ def _run_schtask(action: str):
 
         # 使用短路径避免 schtasks 编码中文路径时出错
         safe_path = _short_path(SELF_PATH)
+        # 非打包模式需要用 pythonw 显式调用
+        if not getattr(sys, 'frozen', False):
+            import shutil
+            pyw = shutil.which("pythonw") or "pythonw"
+            cmd = f'"{pyw}" "{safe_path}" --daemon'
+        else:
+            cmd = f'"{safe_path}" --daemon'
         r = _schtasks(
             "/create", "/tn", TASK_NAME,
-            "/tr", f'"{safe_path}" --daemon',
+            "/tr", cmd,
             "/sc", "ONLOGON",
             "/ru", os.environ.get("USERNAME", ""),
             "/rl", "HIGHEST",
@@ -772,7 +779,7 @@ def main():
             break
 
     if gui_action:
-        # 提权执行的快速路径：执行操作 → 弹结果 → 进入 GUI
+        # 提权执行的快速路径：执行操作 → 弹结果
         import tkinter as tk
         import tkinter.messagebox as mb
         if not _ensure_admin():
@@ -782,7 +789,9 @@ def main():
             t.destroy()
             sys.exit(1)
         _run_schtask(gui_action)
-        # 直接进入 GUI，跳过单实例互斥检查（原进程可能还没释放 mutex）
+        if gui_action == "uninstall":
+            sys.exit(0)  # 卸载后直接退出
+        # install/stop 后进入 GUI 显示状态
         gui_main()
         sys.exit(0)
 
