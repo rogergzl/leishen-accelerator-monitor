@@ -1,0 +1,21 @@
+# PyInstaller 打包产物
+dist/
+build/
+*.spec
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+
+# 日志
+monitor.log
+
+# IDE
+.vscode/
+.idea/
+.reasonix/
+
+# 系统文件
+Thumbs.db
+Desktop.ini
