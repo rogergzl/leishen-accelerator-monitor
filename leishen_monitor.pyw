@@ -726,8 +726,9 @@ def _ensure_admin() -> bool:
 
 def _relaunch_as_admin(action: str):
     """提权重启，并传递要执行的动作"""
+    # 用 sys.executable (pythonw.exe) 而非 SELF_PATH，避免文件关联在提权后失效
     ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", SELF_PATH, f'--gui-action {action}', None, 5  # SW_SHOW
+        None, "runas", sys.executable, f'"{SELF_PATH}" --gui-action {action}', None, 5
     )
     sys.exit(0)
 
