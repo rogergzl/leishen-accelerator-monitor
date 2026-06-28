@@ -75,13 +75,30 @@ pyinstaller --onefile --windowed --name "雷神时长助手" leishen_monitor.pyw
 
 ### 自定义监控进程
 
-编辑 `leishen_monitor.pyw` 顶部的 `PROCESS_NAMES` 列表：
+默认监控 `leigod.exe`（雷神加速器主进程）。如果加速器更新了进程名，有两种方式修改：
 
-```python
-PROCESS_NAMES = [
-    "leigod.exe",              # 雷神加速器
-    "your_game_booster.exe",   # 你的其他加速器
-]
+**方式一：环境变量（推荐，无需重新编译）**
+
+设置系统环境变量 `LEISHEN_PROCESS_NAMES`，多个进程名用逗号分隔：
+
+```
+LEISHEN_PROCESS_NAMES=leigod.exe,new_name.exe
+```
+
+设置后重启监控服务即可生效。
+
+**方式二：修改源码重新编译**
+
+编辑 `leishen_monitor.pyw` 顶部的 `PROCESS_NAMES` 列表，然后重新打包：
+
+```bash
+# 需要 Python 3.10+ 环境
+pip install pyinstaller
+
+# 打包
+pyinstaller --onefile --windowed --name "雷神时长助手" leishen_monitor.pyw
+
+# 输出在 dist/雷神时长助手.exe
 ```
 
 ## License

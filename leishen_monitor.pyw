@@ -21,11 +21,12 @@ from datetime import datetime
 # ============================================================
 PROCESS_NAMES = [
     "leigod.exe",
-    "LeiGodAccelerator.exe",
-    "leishen.exe",
-    "ThunderSpeed.exe",
-    "thunderspeed.exe",
 ]
+
+# 支持通过环境变量覆盖：LEISHEN_PROCESS_NAMES=leigod.exe,xxx.exe
+_env_names = os.environ.get("LEISHEN_PROCESS_NAMES", "")
+if _env_names:
+    PROCESS_NAMES = [n.strip() for n in _env_names.split(",") if n.strip()]
 
 TASK_NAME = "雷神加速器时长监控"
 EXIT_COOLDOWN = 5
