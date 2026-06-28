@@ -31,15 +31,19 @@ if _env_names:
 TASK_NAME = "LeiShenMonitor"
 EXIT_COOLDOWN = 5
 FULLSCREEN_GRACE = 3
-LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor.log")
 
 # 运行时自动获取自己的路径（兼容打包后）
 if getattr(sys, 'frozen', False):
     SELF_PATH = sys.executable
-    _BASE_DIR = sys._MEIPASS
+    _BASE_DIR = sys._MEIPASS           # 打包资源目录（tkinter/tcl等）
+    APP_DIR = os.path.dirname(sys.executable)  # exe所在目录（日志/PID文件）
 else:
     SELF_PATH = os.path.abspath(__file__)
     _BASE_DIR = os.path.dirname(SELF_PATH)
+    APP_DIR = _BASE_DIR
+
+LOG_FILE = os.path.join(APP_DIR, "monitor.log")
+PID_FILE = os.path.join(APP_DIR, ".daemon.pid")
 
 
 def _resolve_path(relative_path: str) -> str:
@@ -588,7 +592,7 @@ class Daemon:
 
         # 写 PID 文件，供卸载时精确杀进程
         try:
-            pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon.pid")
+            pid_file = PID_FILE
             with open(pid_file, "w") as f:
                 f.write(str(os.getpid()))
         except Exception:
@@ -857,7 +861,7 @@ def service_stop() -> dict:
 
     # 3. 通过 PID 文件杀 daemon 进程
     try:
-        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon.pid")
+        pid_file = PID_FILE
         if os.path.exists(pid_file):
             with open(pid_file, "r") as f:
                 pid = int(f.read().strip())
@@ -898,7 +902,7 @@ def service_uninstall() -> dict:
 
     # 2. 通过 PID 文件精确杀掉 daemon 进程
     try:
-        pid_file = os.path.join(os.path.dirname(os.path.abspath(__file__)), ".daemon.pid")
+        pid_file = PID_FILE
         if os.path.exists(pid_file):
             with open(pid_file, "r") as f:
                 pid = int(f.read().strip())
