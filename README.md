@@ -6,7 +6,7 @@
 
 ```bash
 # 开发测试
-python leishen_monitor.pyw --console
+python data/leishen_monitor.pyw --console
 
 # 构建分发
 setup.bat
@@ -16,8 +16,8 @@ setup.bat
 
 | 文件 | 用途 |
 |------|------|
-| `leishen_monitor.pyw` | 核心程序 |
-| `launcher.ps1` | 启动器（检测/下载 Python） |
+| `data/leishen_monitor.pyw` | 核心程序 |
+| `data/launcher.ps1` | 启动器（检测/下载 Python） |
 | `运行.bat` | 用户入口 |
 | `完全卸载.bat` | 强制清理 |
 | `setup.bat` | 构建分发文件夹 |
@@ -33,9 +33,9 @@ setup.bat
 ## 架构
 
 ```
-运行.bat → launcher.ps1 → python --console  # 控制台管理
-                                ↓
-                schtasks ONLOGON → pythonw --daemon  # 后台监控
+运行.bat → data/launcher.ps1 → python --console  # 控制台管理
+                                    ↓
+                    schtasks ONLOGON → pythonw --daemon  # 后台监控
 ```
 
 - **控制台**: 彩色 ANSI 终端，无需 tkinter

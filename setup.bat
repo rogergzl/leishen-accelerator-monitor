@@ -17,8 +17,8 @@ echo   %DIST%
 echo   %DATA%
 
 echo [2] Copying files...
-copy /y "leishen_monitor.pyw" "%DATA%\" >nul
-copy /y "launcher.ps1" "%DATA%\" >nul
+copy /y "data\leishen_monitor.pyw" "%DATA%\" >nul
+copy /y "data\launcher.ps1" "%DATA%\" >nul
 copy /y "运行.bat" "%DIST%\" >nul
 copy /y "完全卸载.bat" "%DIST%\" >nul
 echo   OK
