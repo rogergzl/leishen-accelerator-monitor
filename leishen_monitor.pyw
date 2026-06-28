@@ -730,10 +730,16 @@ def _ensure_admin() -> bool:
 
 def _relaunch_as_admin(action: str):
     """提权重启，并传递要执行的动作"""
-    # 用 sys.executable (pythonw.exe) 而非 SELF_PATH，避免文件关联在提权后失效
-    ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", sys.executable, f'"{SELF_PATH}" --gui-action {action}', None, 5
-    )
+    if getattr(sys, 'frozen', False):
+        # exe 模式：直接启动自身，不带脚本路径
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, f'--gui-action {action}', None, 5
+        )
+    else:
+        # .pyw 模式：用 pythonw.exe 启动脚本
+        ctypes.windll.shell32.ShellExecuteW(
+            None, "runas", sys.executable, f'"{SELF_PATH}" --gui-action {action}', None, 5
+        )
     sys.exit(0)
 
 
@@ -829,7 +835,7 @@ def service_install() -> dict:
 
     # 5. 等待并验证
     _print_log("[安装] 等待进程启动...")
-    time.sleep(2)
+    time.sleep(5)  # exe模式 PyInstaller 解压需要时间
     status = service_status()
     if status["running"]:
         _print_log("[安装] 验证通过: 进程正在运行")
