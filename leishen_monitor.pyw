@@ -461,19 +461,27 @@ class Daemon:
         _daemon_instance = self
         log(f"Daemon 启动, 加速器={'运行中' if is_accelerator_running() else '未运行'}")
 
-        self._hwnd = _create_message_window()
-        log(f"消息窗口创建: {self._hwnd}")
-
         self._fs = FullscreenWatcher(self._on_fs_exit)
         self._fs.start()
         self._wmi = WMIWatcher(PROCESS_NAMES, self._on_accel_exit)
         self._wmi.start()
 
-        self._shutdown_hook()
-        self._update_block()
-
-        log("进入消息循环")
-        _message_pump()
+        try:
+            self._hwnd = _create_message_window()
+            log(f"消息窗口创建: {self._hwnd}")
+            if self._hwnd:
+                self._shutdown_hook()
+                self._update_block()
+                log("进入消息循环")
+                _message_pump()
+            else:
+                log("消息窗口创建失败，仅运行进程监控（无关机拦截）")
+                while self._running:
+                    time.sleep(1)
+        except Exception as e:
+            log(f"Daemon 错误: {e}")
+            import traceback
+            log(traceback.format_exc())
 
     def stop(self):
         self._running = False
@@ -729,11 +737,11 @@ def gui_main():
                 running = True
 
         if running:
-            set_status("● 监控运行中", green)
+            set_status("监控运行中", green)
         elif exists:
-            set_status("○ 已注册但未运行", yellow)
+            set_status("已注册但未运行", yellow)
         else:
-            set_status("○ 未安装", red)
+            set_status("未安装", red)
 
     def refresh_after_delay(seconds: int = 3):
         """延迟刷新状态，期间显示加载中"""
