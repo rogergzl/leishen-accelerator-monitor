@@ -1,30 +1,35 @@
 @echo off
-title Build LeiShenMonitor
+title Build LeiShenMonitor Distribution
 cd /d "%~dp0"
 
 echo ============================================
-echo   LeiShenMonitor - Build
+echo   LeiShenMonitor - Prepare Distribution
 echo ============================================
 echo.
 
-echo [1] Checking pyinstaller...
-pyinstaller --version >nul 2>&1
-if errorlevel 1 (
-    echo   Installing pyinstaller...
-    pip install pyinstaller -q
-)
+set "DIST=dist\LeiShenMonitor"
+set "DATA=%DIST%\data"
+
+echo [1] Creating distribution folder...
+if exist "%DIST%" rd /s /q "%DIST%"
+mkdir "%DATA%" 2>nul
+echo   %DIST%
+echo   %DATA%
+
+echo [2] Copying files...
+copy /y "leishen_monitor.pyw" "%DATA%\" >nul
+copy /y "launcher.ps1" "%DATA%\" >nul
+copy /y "运行.bat" "%DIST%\" >nul
+copy /y "完全卸载.bat" "%DIST%\" >nul
 echo   OK
 
-echo [2] Building single-file exe...
-pyinstaller --onefile --windowed --icon tu.ico --add-data "tu.ico;." --name LeiShenMonitor leishen_monitor.pyw
-if errorlevel 1 (
-    echo   FAILED
-    pause
-    exit /b 1
-)
-
 echo.
 echo ============================================
-echo   Build complete: dist\LeiShenMonitor.exe
+echo   Distribution ready: %DIST%
+echo.
+echo   Files:
+echo     %DIST%\运行.bat          (Run)
+echo     %DIST%\完全卸载.bat       (Uninstall)
+echo     %DIST%\data\...          (Core files)
 echo ============================================
 pause

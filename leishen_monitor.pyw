@@ -44,6 +44,7 @@ else:
 
 LOG_FILE = os.path.join(APP_DIR, "monitor.log")
 PID_FILE = os.path.join(APP_DIR, ".daemon.pid")
+INSTALL_PATH_FILE = os.path.join(APP_DIR, ".install_path")
 
 
 def _resolve_path(relative_path: str) -> str:
@@ -78,7 +79,12 @@ def log(msg: str):
 # ============================================================
 user32 = ctypes.windll.user32
 kernel32 = ctypes.windll.kernel32
+wtsapi32 = ctypes.windll.wtsapi32
 WM_QUERYENDSESSION = 0x0011
+
+# WTS API 常量 — 用于从后台进程可靠地向用户会话发送消息框
+WTS_CURRENT_SERVER_HANDLE = 0
+WTS_CURRENT_SESSION = 0xFFFFFFFF  # -1
 
 # kernel32: 进程监控
 CreateToolhelp32Snapshot = kernel32.CreateToolhelp32Snapshot
@@ -252,8 +258,44 @@ def show_shutdown_block(reason: str = "") -> bool:
 
 
 # ============================================================
-# Daemon: 进程句柄监听（WaitForMultipleObjects，零轮询零日志污染）
+# 后台进程消息框（daemon 通过 schtasks 运行，MessageBoxW(NULL) 可能不可见）
 # ============================================================
+def _daemon_message_box(title: str, message: str, style: int = 0) -> int:
+    """从后台 daemon 进程显示消息框。
+    
+    优先使用 WTSSendMessage（专为 Session 0/后台进程设计），
+    失败时回退到 MessageBoxW + MB_SERVICE_NOTIFICATION。
+    返回 IDOK/IDYES/IDNO 等。
+    """
+    MB_SERVICE_NOTIFICATION = 0x00200000
+    
+    # 方法1: WTSSendMessageW — 最可靠的后台→桌面消息
+    try:
+        response = ctypes.wintypes.DWORD()
+        result = wtsapi32.WTSSendMessageW(
+            WTS_CURRENT_SERVER_HANDLE,
+            WTS_CURRENT_SESSION,
+            title, len(title),
+            message, len(message),
+            style | MB_SERVICE_NOTIFICATION,
+            0,  # timeout: 0 = no timeout
+            ctypes.byref(response),
+            True,  # bWait: wait for user
+        )
+        if result:
+            log(f"WTSSendMessage 成功, response={response.value}")
+            return response.value
+    except Exception as e:
+        log(f"WTSSendMessage 失败: {e}")
+    
+    # 方法2: MessageBoxW + MB_SERVICE_NOTIFICATION 兜底
+    try:
+        rc = user32.MessageBoxW(0, message, title, style | MB_SERVICE_NOTIFICATION | 0x40000)
+        log(f"MessageBoxW 兜底, rc={rc}")
+        return rc
+    except Exception as e:
+        log(f"MessageBoxW 兜底也失败: {e}")
+        return 0
 SCAN_INTERVAL = 3  # 没找到进程时重新扫描的间隔（秒）
 
 
@@ -505,7 +547,11 @@ class Daemon:
             self._accel_exit_pending = True
             log("全屏中，暂缓加速器退出弹窗")
         elif not self._shutdowning:
-            threading.Thread(target=lambda: user32.MessageBoxW(0, "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！", "雷神加速器已退出", 0x40030), daemon=True).start()
+            threading.Thread(target=lambda: _daemon_message_box(
+                "雷神加速器已退出",
+                "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！",
+                0x00040,  # MB_OK | MB_ICONINFORMATION
+            ), daemon=True).start()
 
     def _on_fs_exit(self, title):
         label = f"「{title}」" if title else "全屏程序"
@@ -517,9 +563,17 @@ class Daemon:
             # 全屏退出时补弹加速器退出提醒
             self._accel_exit_pending = False
             log("全屏退出，补弹加速器退出提醒")
-            threading.Thread(target=lambda: user32.MessageBoxW(0, "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！", "雷神加速器已退出", 0x40030), daemon=True).start()
+            threading.Thread(target=lambda: _daemon_message_box(
+                "雷神加速器已退出",
+                "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！",
+                0x00040,
+            ), daemon=True).start()
         elif not self._shutdowning:
-            threading.Thread(target=lambda: user32.MessageBoxW(0, f"检测到 {label} 已退出。\n\n雷神加速器的时长可能还在消耗中！\n别忘了暂停加速时长哦～", "全屏程序已退出", 0x40030), daemon=True).start()
+            threading.Thread(target=lambda: _daemon_message_box(
+                "全屏程序已退出",
+                f"检测到 {label} 已退出。\n\n雷神加速器的时长可能还在消耗中！\n别忘了暂停加速时长哦～",
+                0x00040,
+            ), daemon=True).start()
 
     def _shutdown_hook(self):
         GWLP_WNDPROC = -4
@@ -632,6 +686,16 @@ class Daemon:
             pass
         if self._hwnd:
             user32.PostMessageW(self._hwnd, 0x0010, 0, 0)  # WM_CLOSE
+        # 清理 PID 文件
+        try:
+            pid_file = PID_FILE
+            if os.path.exists(pid_file):
+                with open(pid_file, "r") as f:
+                    pid = int(f.read().strip())
+                if pid == os.getpid():
+                    os.remove(pid_file)
+        except Exception:
+            pass
 
 
 # ============================================================
@@ -729,17 +793,31 @@ def _ensure_admin() -> bool:
 
 
 def _relaunch_as_admin(action: str):
-    """提权重启，并传递要执行的动作"""
+    """提权重启，并传递要执行的动作。
+    
+    使用 PowerShell Start-Process -Verb RunAs 是最可靠的方式：
+    - ShellExecuteW 在 PyInstaller --windowed 打包的 GUI 应用中可能不触发 UAC
+    - test.ps1 也是同样的 Start-Process -Verb RunAs 模式
+    """
     if getattr(sys, 'frozen', False):
-        # exe 模式：直接启动自身，不带脚本路径
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, f'--gui-action {action}', None, 5
+        # exe 模式：直接启动自身
+        ps_cmd = (
+            f'Start-Process -FilePath "{sys.executable}"'
+            f' -ArgumentList "--gui-action {action}"'
+            f' -Verb RunAs'
         )
     else:
         # .pyw 模式：用 pythonw.exe 启动脚本
-        ctypes.windll.shell32.ShellExecuteW(
-            None, "runas", sys.executable, f'"{SELF_PATH}" --gui-action {action}', None, 5
+        ps_cmd = (
+            f'Start-Process -FilePath "{sys.executable}"'
+            f' -ArgumentList \'"{SELF_PATH}" --gui-action {action}\''
+            f' -Verb RunAs'
         )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps_cmd],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        timeout=30,
+    )
     sys.exit(0)
 
 
@@ -752,24 +830,16 @@ def _schtasks(*args) -> subprocess.CompletedProcess:
 
 
 def service_status() -> dict:
-    """查询服务状态，返回 {exists, running, status_text}"""
+    """查询服务状态，返回 {exists, running, status_text}
+    
+    判定逻辑：
+    - exists: 计划任务已注册
+    - running: daemon 进程确实在运行（通过 .daemon.pid 文件验证，排除 GUI 自身进程）
+    """
     exists = _schtasks("/query", "/tn", TASK_NAME).returncode == 0
     running = False
     if exists:
-        r = subprocess.run(
-            ["tasklist", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fo", "csv", "/nh"],
-            capture_output=True, text=True,
-            creationflags=subprocess.CREATE_NO_WINDOW,
-        )
-        if "LeiShenMonitor" not in r.stdout:
-            r = subprocess.run(
-                ["tasklist", "/fi", "IMAGENAME eq pythonw.exe", "/fo", "csv", "/nh"],
-                capture_output=True, text=True,
-                creationflags=subprocess.CREATE_NO_WINDOW,
-            )
-            running = "pythonw" in r.stdout
-        else:
-            running = True
+        running = _is_daemon_pid_alive()
 
     if running:
         status_text = "监控运行中"
@@ -779,6 +849,131 @@ def service_status() -> dict:
         status_text = "未安装"
 
     return {"exists": exists, "running": running, "status_text": status_text}
+
+
+def _kill_all_daemons():
+    """杀掉所有 daemon 进程（排除当前 GUI 进程）。
+    
+    用于 install 前清理僵尸 daemon。
+    """
+    # 通过 PID 文件杀
+    pid_file = PID_FILE
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file, "r") as f:
+                pid = int(f.read().strip())
+            if pid != os.getpid():
+                _print_log(f"[清理] 通过 PID 文件杀 daemon PID={pid}")
+                h = kernel32.OpenProcess(0x0001, False, pid)  # PROCESS_TERMINATE
+                if h:
+                    kernel32.TerminateProcess(h, 0)
+                    kernel32.CloseHandle(h)
+            os.remove(pid_file)
+        except Exception:
+            pass
+
+    # 兜底：杀所有同名的 --daemon 进程
+    exe_name = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else "pythonw.exe"
+    try:
+        r = subprocess.run(
+            ["wmic", "process", "where", f"name='{exe_name}'", "get", "ProcessId,CommandLine", "/format:csv"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        for line in r.stdout.splitlines():
+            if "--daemon" in line and f"{os.getpid()}" not in line:
+                parts = line.strip().split(",")
+                if len(parts) >= 3:
+                    try:
+                        pid = int(parts[-1].strip())
+                        if pid != os.getpid():
+                            _print_log(f"[清理] wmic 杀 daemon PID={pid}")
+                            h = kernel32.OpenProcess(0x0001, False, pid)
+                            if h:
+                                kernel32.TerminateProcess(h, 0)
+                                kernel32.CloseHandle(h)
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+
+
+def _write_install_path():
+    """记录当前安装路径，用于检测文件夹是否被移动"""
+    try:
+        with open(INSTALL_PATH_FILE, "w", encoding="utf-8") as f:
+            f.write(APP_DIR)
+    except Exception:
+        pass
+
+
+def _check_moved() -> bool:
+    """检测安装文件夹是否已被移动"""
+    if not os.path.exists(INSTALL_PATH_FILE):
+        return False
+    try:
+        with open(INSTALL_PATH_FILE, "r", encoding="utf-8") as f:
+            old = f.read().strip()
+        return os.path.normcase(old) != os.path.normcase(APP_DIR)
+    except Exception:
+        return False
+
+
+def _is_daemon_pid_alive() -> bool:
+    """读取 .daemon.pid 文件并验证该 PID 是否仍在运行。
+    
+    检测策略（多层 fallback）：
+    1. .daemon.pid 文件 + OpenProcess 验证 PID 存活 → 最可靠
+    2. wmic 命令行检查 --daemon 参数 → 兜底（排除 GUI 自身）
+    """
+    pid_file = PID_FILE
+    
+    # 策略1: PID 文件验证
+    if os.path.exists(pid_file):
+        try:
+            with open(pid_file, "r") as f:
+                pid = int(f.read().strip())
+        except (ValueError, OSError):
+            pass
+        else:
+            if pid == os.getpid():
+                # 当前 GUI 进程，不算 daemon
+                pass
+            else:
+                SYNCHRONIZE = 0x00100000
+                h = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+                if h:
+                    kernel32.CloseHandle(h)
+                    return True
+                # PID 不存在/无法访问，清理过期 PID 文件
+                try:
+                    os.remove(pid_file)
+                except OSError:
+                    pass
+    
+    # 策略2: wmic 命令行检查（兜底，排除 GUI 自身）
+    try:
+        exe_name = os.path.basename(sys.executable) if getattr(sys, 'frozen', False) else "pythonw.exe"
+        r = subprocess.run(
+            ["wmic", "process", "where", f"name='{exe_name}'", "get", "ProcessId,CommandLine", "/format:csv"],
+            capture_output=True, text=True, timeout=10,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+        for line in r.stdout.splitlines():
+            if "--daemon" in line and f"{os.getpid()}" not in line:
+                # 提取 PID
+                parts = line.strip().split(",")
+                if len(parts) >= 3:
+                    try:
+                        wmic_pid = int(parts[-1].strip())
+                        if wmic_pid != os.getpid():
+                            return True
+                    except ValueError:
+                        pass
+    except Exception:
+        pass
+    
+    return False
 
 
 def service_install() -> dict:
@@ -791,7 +986,11 @@ def service_install() -> dict:
         _print_log("[安装] 失败: 需要管理员权限")
         return {"success": False, "message": "需要管理员权限，请以管理员身份运行。"}
 
-    # 1. 如果已存在，先删除
+    # 1. 先杀掉所有旧的 daemon 进程（避免僵尸进程累积）
+    _print_log("[安装] 清理旧 daemon 进程...")
+    _kill_all_daemons()
+
+    # 2. 如果已存在计划任务，先删除
     if _schtasks("/query", "/tn", TASK_NAME).returncode == 0:
         _print_log("[安装] 检测到已有任务，先删除...")
         r_del = _schtasks("/delete", "/tn", TASK_NAME, "/f")
@@ -800,18 +999,18 @@ def service_install() -> dict:
             return {"success": False, "message": f"删除旧任务失败:\n{r_del.stderr.strip()}"}
         _print_log("[安装] 旧任务已删除")
 
-    # 2. 构建启动命令
-    safe_path = _short_path(SELF_PATH)
+    # 3. 构建启动命令
     if not getattr(sys, 'frozen', False):
-        import shutil
-        pyw = shutil.which("pythonw") or "pythonw"
+        safe_path = _short_path(SELF_PATH)
+        pyw = os.path.join(os.path.dirname(sys.executable), "pythonw.exe")
+        if not os.path.exists(pyw):
+            pyw = sys.executable
         cmd = f'"{pyw}" "{safe_path}" --daemon'
-        _print_log(f"[安装] 非打包模式，使用 pythonw: {pyw}")
     else:
-        cmd = f'"{safe_path}" --daemon'
+        cmd = f'"{SELF_PATH}" --daemon'
     _print_log(f"[安装] 启动命令: {cmd}")
 
-    # 3. 创建计划任务
+    # 4. 创建计划任务
     r = _schtasks(
         "/create", "/tn", TASK_NAME,
         "/tr", cmd,
@@ -825,7 +1024,7 @@ def service_install() -> dict:
         return {"success": False, "message": f"计划任务创建失败:\n{r.stderr.strip()}"}
     _print_log("[安装] 计划任务创建成功")
 
-    # 4. 立即启动
+    # 5. 立即启动
     r2 = _schtasks("/run", "/tn", TASK_NAME)
     if r2.returncode != 0:
         _print_log(f"[安装] 立即启动失败: {r2.stderr.strip()}")
@@ -833,16 +1032,22 @@ def service_install() -> dict:
         return {"success": True, "message": "任务已注册，但立即启动失败。重启电脑后会自动运行。"}
     _print_log("[安装] 任务已启动")
 
-    # 5. 等待并验证
+    # 6. 轮询等待 daemon 就绪
     _print_log("[安装] 等待进程启动...")
-    time.sleep(5)  # exe模式 PyInstaller 解压需要时间
-    status = service_status()
-    if status["running"]:
-        _print_log("[安装] 验证通过: 进程正在运行")
+    for i in range(15):  # 最多等 15 秒
+        time.sleep(1)
+        if _is_daemon_pid_alive():
+            _print_log(f"[安装] 验证通过: daemon 进程已就绪 (耗时 {i+1}s)")
+            _write_install_path()
+            return {"success": True, "message": "服务已启用并正在运行。"}
+    # 最后一次尝试 wmic 兜底
+    if service_status()["running"]:
+        _print_log("[安装] 验证通过: daemon 进程已就绪 (wmic 兜底)")
+        _write_install_path()
         return {"success": True, "message": "服务已启用并正在运行。"}
-    else:
-        _print_log("[安装] 警告: 任务已创建但进程未检测到运行")
-        return {"success": True, "message": "任务已创建。如果未运行，请检查日志或重启电脑。"}
+    _print_log("[安装] 警告: 任务已创建但进程未检测到运行")
+    _write_install_path()  # 即使未检测到也记录（可能稍后启动）
+    return {"success": True, "message": "任务已创建。如果未运行，请检查日志或重启电脑。"}
 
 
 def service_stop() -> dict:
@@ -887,7 +1092,10 @@ def service_stop() -> dict:
         ["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", f"PID ne {os.getpid()}", "/f"],
         capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
     )
-    subprocess.run(["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"], capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW)
+    subprocess.run(
+        ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fi", f"PID ne {os.getpid()}", "/f"],
+        capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
+    )
     _print_log("[停止] 残留进程已清理")
 
     return {"success": True, "message": "服务已停止。"}
@@ -922,14 +1130,14 @@ def service_uninstall() -> dict:
     except Exception as e:
         _print_log(f"[卸载] PID 杀进程失败: {e}")
 
-    # 3. 兜底：杀掉其他 pythonw.exe（排除自身）
+    # 3. 兜底：杀掉其他进程（排除自身）
     _print_log("[卸载] 清理残留进程（排除自身）")
     subprocess.run(
         ["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", f"PID ne {os.getpid()}", "/f"],
         capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
     )
     subprocess.run(
-        ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"],
+        ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fi", f"PID ne {os.getpid()}", "/f"],
         capture_output=True, creationflags=subprocess.CREATE_NO_WINDOW,
     )
     _print_log("[卸载] 残留进程已清理")
@@ -941,6 +1149,13 @@ def service_uninstall() -> dict:
         _print_log(f"[卸载] 删除任务失败: {r.stderr.strip()}")
         return {"success": False, "message": f"计划任务删除失败:\n{r.stderr.strip()}"}
     _print_log("[卸载] 任务已删除")
+    
+    # 清理安装路径记录
+    try:
+        if os.path.exists(INSTALL_PATH_FILE):
+            os.remove(INSTALL_PATH_FILE)
+    except Exception:
+        pass
 
     return {"success": True, "message": "监控服务已完全卸载。"}
 
@@ -954,12 +1169,39 @@ def gui_main():
     root.title("雷神加速器 - 时长监控助手")
     root.resizable(False, False)
 
-    # 窗口图标
+    # 窗口图标 — 多种方式尝试，兼容打包后的 exe
+    _icon_loaded = False
+
+    # 方式1: 从打包数据目录加载 tu.ico
     try:
         ico_path = _resolve_path("tu.ico")
-        root.iconbitmap(ico_path)
+        if os.path.exists(ico_path):
+            root.iconbitmap(ico_path)
+            _icon_loaded = True
     except Exception:
         pass
+
+    # 方式2: 从 exe 同级目录加载（兜底）
+    if not _icon_loaded:
+        try:
+            exe_dir = os.path.dirname(sys.executable) if getattr(sys, 'frozen', False) else APP_DIR
+            fallback_ico = os.path.join(exe_dir, "tu.ico")
+            if os.path.exists(fallback_ico):
+                root.iconbitmap(fallback_ico)
+                _icon_loaded = True
+        except Exception:
+            pass
+
+    # 方式3: iconphoto 作为最后的 fallback（支持 PNG）
+    if not _icon_loaded:
+        try:
+            png_path = _resolve_path("tu.png")
+            if os.path.exists(png_path):
+                img = tk.PhotoImage(file=png_path)
+                root.iconphoto(True, img)
+                _icon_loaded = True
+        except Exception:
+            pass
 
     # 窗口居中
     w, h = 380, 280
@@ -1111,63 +1353,132 @@ def console_main():
     global _CONSOLE_MODE
     _CONSOLE_MODE = True
 
-    print("=" * 50)
-    print("  雷神加速器 · 时长监控助手 (控制台)")
-    print("=" * 50)
+    # 启用 Windows 终端 ANSI 颜色支持
+    _ansi_setup()
+
+    # ANSI 颜色码
+    C = "\033[36m"   # 青色 — 标题
+    G = "\033[32m"   # 绿色 — OK/运行中
+    Y = "\033[33m"   # 黄色 — 警告
+    R = "\033[31m"   # 红色 — 未安装/失败
+    L = "\033[94m"   # 浅蓝 — 菜单项
+    H = "\033[92m"   # 浅绿 — 输入提示
+    D = "\033[90m"   # 深灰 — 次要信息
+    B = "\033[1m"    # 粗体
+    X = "\033[0m"    # 重置
+
+    print(f"{C}{'=' * 50}{X}")
+    print(f"{B}  雷神加速器 · 时长监控助手 (控制台){X}")
+    print(f"{C}{'=' * 50}{X}")
+
+    # 检测文件夹是否被移动
+    if _check_moved():
+        print(f"\n{Y}[!] 检测到程序文件夹已被移动！{X}")
+        print(f"{Y}[!] 计划任务中记录的仍是旧路径，监控无法正常运行。{X}")
+        print(f"{Y}[!] 请先执行 [3.卸载服务]，然后重新 [1.启用服务]。{X}")
+        print()
+
+    # 首次检测：未安装则询问是否立即启用
+    s = service_status()
+    if not s["exists"]:
+        _print_status(s, G, Y, R, X)
+        print(f"{D}{'-' * 30}{X}")
+        try:
+            ans = input(f"是否立即启用监控服务？(开机自启) {D}[Y/n]:{X} ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print(f"\n{D}已退出。{X}")
+            return
+        if ans in ("", "y", "yes"):
+            print(f"\n{D}>>> 执行: 启用服务{X}")
+            result = service_install()
+            _print_result(result, G, R, X)
 
     while True:
         s = service_status()
-        print(f"\n当前状态: {s['status_text']}")
-        print("-" * 30)
-        print("  1. 启用服务（注册并启动）")
-        print("  2. 停止服务")
-        print("  3. 卸载服务")
-        print("  4. 查看日志（最后20行）")
-        print("  0. 退出")
-        print("-" * 30)
+        _print_status(s, G, Y, R, X)
+        print(f"{D}{'-' * 30}{X}")
+        print(f"  {L}1. 启用/重启服务{X}")
+        print(f"  {L}2. 停止服务{X}")
+        print(f"  {L}3. 卸载服务{X}")
+        print(f"  {L}4. 查看日志（最后20行）{X}")
+        print(f"  {D}0. 退出{X}")
+        print(f"{D}{'-' * 30}{X}")
 
         try:
-            choice = input("请选择 [0-4]: ").strip()
+            choice = input(f"{H}请选择 [0-4]:{X} ").strip()
         except (EOFError, KeyboardInterrupt):
-            print("\n已退出。")
+            print(f"\n{D}已退出。{X}")
             break
 
         if choice == "1":
-            print("\n>>> 执行: 启用服务")
+            print(f"\n{D}>>> 执行: 启用服务{X}")
             result = service_install()
-            print(f"\n{'[OK]' if result['success'] else '[FAIL]'} {result['message']}")
+            _print_result(result, G, R, X)
 
         elif choice == "2":
-            print("\n>>> 执行: 停止服务")
+            print(f"\n{D}>>> 执行: 停止服务{X}")
             result = service_stop()
-            print(f"\n{'[OK]' if result['success'] else '[FAIL]'} {result['message']}")
+            _print_result(result, G, R, X)
 
         elif choice == "3":
-            confirm = input("\n确定要完全卸载监控服务吗？[y/N]: ").strip().lower()
+            confirm = input(f"\n确定要完全卸载监控服务吗？ {D}[y/N]:{X} ").strip().lower()
             if confirm != 'y':
-                print("已取消。")
+                print(f"{D}已取消。{X}")
                 continue
-            print("\n>>> 执行: 卸载服务")
+            print(f"\n{D}>>> 执行: 卸载服务{X}")
             result = service_uninstall()
-            print(f"\n{'[OK]' if result['success'] else '[FAIL]'} {result['message']}")
+            _print_result(result, G, R, X)
 
         elif choice == "4":
-            print("\n--- monitor.log (最后20行) ---")
+            print(f"\n{D}--- monitor.log (最后20行) ---{X}")
             try:
                 with open(LOG_FILE, "r", encoding="utf-8") as f:
                     lines = f.readlines()
                     for line in lines[-20:]:
-                        print(f"  {line.rstrip()}")
+                        print(f"  {D}{line.rstrip()}{X}")
             except FileNotFoundError:
-                print("  (日志文件不存在)")
-            print("--- 结束 ---")
+                print(f"  {D}(日志文件不存在){X}")
+            print(f"{D}--- 结束 ---{X}")
 
         elif choice == "0":
-            print("已退出。")
+            print(f"{D}已退出。{X}")
             break
 
         else:
-            print("无效选择，请输入 0-4。")
+            print(f"{Y}无效选择，请输入 0-4。{X}")
+
+
+def _ansi_setup():
+    """启用 Windows 控制台 ANSI 转义序列支持"""
+    try:
+        kernel32 = ctypes.windll.kernel32
+        STD_OUTPUT_HANDLE = -11
+        ENABLE_VIRTUAL_TERMINAL_PROCESSING = 0x0004
+        h = kernel32.GetStdHandle(STD_OUTPUT_HANDLE)
+        mode = ctypes.wintypes.DWORD()
+        kernel32.GetConsoleMode(h, ctypes.byref(mode))
+        kernel32.SetConsoleMode(h, mode.value | ENABLE_VIRTUAL_TERMINAL_PROCESSING)
+    except Exception:
+        pass  # 不支持时静默退化
+
+
+def _print_status(s, G, Y, R, X):
+    """彩色打印服务状态"""
+    status = s['status_text']
+    if s['running']:
+        color = G
+    elif s['exists']:
+        color = Y
+    else:
+        color = R
+    print(f"\n当前状态: {color}{status}{X}")
+
+
+def _print_result(result, G, R, X):
+    """彩色打印操作结果"""
+    ok = result['success']
+    tag = f"{G}[OK]{X}" if ok else f"{R}[FAIL]{X}"
+    print(f"\n{tag} {result['message']}")
 
 
 # ============================================================

@@ -11,6 +11,7 @@ __pycache__/
 
 # Runtime
 .daemon.pid
+.install_path
 monitor.log
 *.log
 
