@@ -7,10 +7,9 @@
 ```bash
 # 开发测试
 python data/leishen_monitor.pyw --console
-
-# 构建分发
-setup.bat
 ```
+
+仓库即分发。克隆/下载后双击 `运行.bat` 即可使用。
 
 ## 文件
 
