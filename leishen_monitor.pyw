@@ -352,6 +352,7 @@ class Daemon:
     def __init__(self):
         self._running = True
         self._shutdowning = False
+        self._shutdown_blocked_this_session = False  # 本开机周期内已拦截过一次
         self._root = None
         self._hwnd = 0
         self._wmi = None
@@ -382,17 +383,26 @@ class Daemon:
                 log("WM_QUERYENDSESSION")
                 block = False
                 reason = ""
+
+                # 本周期内只拦截一次 — 已经拦过了就放行
+                if self._shutdown_blocked_this_session:
+                    log("本周期已拦截过，放行")
+                    return 1  # TRUE → 允许关机
+
                 if is_accelerator_running():
                     block = True
                     reason = "雷神加速器仍在运行！"
                 elif self._fs_just_exited and time.time() < self._fs_grace_until:
                     block = True
                     reason = "你刚退出全屏程序，加速时长可能还在消耗！"
+
                 if block:
                     self._shutdowning = True
                     cancel = show_shutdown_block(reason)
                     self._shutdowning = False
+                    self._shutdown_blocked_this_session = True  # 标记已拦截
                     if cancel:
+                        log("用户取消关机（本周期不再拦截）")
                         return 0
                     self._fs_just_exited = False
                     ShutdownBlockReasonDestroy(self._hwnd)
