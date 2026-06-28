@@ -441,29 +441,34 @@ class Daemon:
         global _ROOT
         import tkinter as tk
 
-        acc = is_accelerator_running()
-        log(f"Daemon 启动, 加速器={'运行中' if acc else '未运行'}")
-
-        self._root = tk.Tk()
-        self._root.withdraw()
-        self._root.title("LeiShenMonitor")
         try:
-            self._root.iconbitmap(_resolve_path("tu.ico"))
-        except Exception:
-            pass
-        _ROOT = self._root
-        self._hwnd = self._root.winfo_id()
+            acc = is_accelerator_running()
+            log(f"Daemon 启动, 加速器={'运行中' if acc else '未运行'}")
 
-        self._fs = FullscreenWatcher(self._on_fs_exit)
-        self._fs.start()
-        self._wmi = WMIWatcher(PROCESS_NAMES, self._on_accel_exit)
-        self._wmi.start()
+            self._root = tk.Tk()
+            self._root.withdraw()
+            self._root.title("LeiShenMonitor")
+            try:
+                self._root.iconbitmap(_resolve_path("tu.ico"))
+            except Exception:
+                pass
+            _ROOT = self._root
+            self._hwnd = self._root.winfo_id()
 
-        self._shutdown_hook()
-        self._update_block()
+            self._fs = FullscreenWatcher(self._on_fs_exit)
+            self._fs.start()
+            self._wmi = WMIWatcher(PROCESS_NAMES, self._on_accel_exit)
+            self._wmi.start()
 
-        log("进入消息循环")
-        self._root.mainloop()
+            self._shutdown_hook()
+            self._update_block()
+
+            log("进入消息循环")
+            self._root.mainloop()
+        except Exception as e:
+            log(f"Daemon 致命错误: {e}")
+            import traceback
+            log(traceback.format_exc())
 
     def stop(self):
         self._running = False
@@ -723,7 +728,7 @@ def main():
             break
 
     if gui_action:
-        # 提权执行的快速路径：执行操作 → 弹结果 → 退出
+        # 提权执行的快速路径：执行操作 → 弹结果 → 进入 GUI
         import tkinter as tk
         import tkinter.messagebox as mb
         if not _ensure_admin():
@@ -733,7 +738,7 @@ def main():
             t.destroy()
             sys.exit(1)
         _run_schtask(gui_action)
-        sys.exit(0)
+        # 不 exit，继续进入下方 GUI 让用户看到状态
 
     # 单实例保护（仅 GUI 模式）
     mutex = kernel32.CreateMutexW(None, False, "Global\\LeiShenAcceleratorMonitorGUI")
