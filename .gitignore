@@ -3,6 +3,9 @@ dist/
 build/
 *.spec
 
+# 原始素材（仅保留 .ico 即可）
+tu.png
+
 # Python
 __pycache__/
 *.pyc
