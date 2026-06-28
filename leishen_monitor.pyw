@@ -28,7 +28,7 @@ _env_names = os.environ.get("LEISHEN_PROCESS_NAMES", "")
 if _env_names:
     PROCESS_NAMES = [n.strip() for n in _env_names.split(",") if n.strip()]
 
-TASK_NAME = "雷神加速器时长监控"
+TASK_NAME = "LeiShenMonitor"
 EXIT_COOLDOWN = 5
 FULLSCREEN_GRACE = 3
 LOG_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "monitor.log")

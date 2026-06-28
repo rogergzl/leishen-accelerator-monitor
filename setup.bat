@@ -9,7 +9,7 @@ title 雷神加速器 - 时长监控助手
 
 set "SCRIPT_DIR=%~dp0"
 set "SCRIPT_PATH=%SCRIPT_DIR%leishen_monitor.pyw"
-set "TASK_NAME=雷神加速器时长监控"
+set "TASK_NAME=LeiShenMonitor"
 set "CURRENT_USER=%USERNAME%"
 
 :: ---- 检查管理员权限 ----
