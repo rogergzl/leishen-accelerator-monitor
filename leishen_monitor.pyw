@@ -667,7 +667,21 @@ def gui_main():
     # ---- 刷新状态 ----
     def refresh_status():
         exists = _task_exists()
-        running = _task_running() if exists else False
+        running = False
+        if exists:
+            # 用 tasklist 检测 daemon 是否真的在跑（避免 schtasks 语言问题）
+            r = subprocess.run(
+                ["tasklist", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fo", "csv", "/nh"],
+                capture_output=True, text=True,
+            )
+            if "LeiShenMonitor" not in r.stdout:
+                r = subprocess.run(
+                    ["tasklist", "/fi", "IMAGENAME eq pythonw.exe", "/fo", "csv", "/nh"],
+                    capture_output=True, text=True,
+                )
+                running = "pythonw" in r.stdout
+            else:
+                running = True
 
         if running:
             set_status("● 监控运行中", green)
@@ -676,6 +690,10 @@ def gui_main():
         else:
             set_status("○ 未安装", red)
 
+    # ---- 延时刷新（给 daemon 启动时间）----
+    def delayed_refresh():
+        root.after(2000, refresh_status)
+
     # ---- 操作 ----
     def do_install():
         if not _ensure_admin():
@@ -683,6 +701,7 @@ def gui_main():
             return
         _run_schtask("install")
         root.after(500, refresh_status)
+        root.after(3000, refresh_status)  # daemon 启动需要时间
 
     def do_stop():
         if not _ensure_admin():
