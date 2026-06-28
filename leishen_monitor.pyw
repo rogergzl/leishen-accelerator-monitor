@@ -754,6 +754,14 @@ def main():
         _run_schtask(gui_action)
         # 不 exit，继续进入下方 GUI 让用户看到状态
 
+    # --check: 快速检测，无 GUI
+    if "--check" in sys.argv:
+        if is_accelerator_running():
+            print("leigod.exe: RUNNING")
+        else:
+            print("leigod.exe: NOT RUNNING")
+        sys.exit(0)
+
     # 单实例保护（仅 GUI 模式）
     mutex = kernel32.CreateMutexW(None, False, "Global\\LeiShenAcceleratorMonitorGUI")
     if kernel32.GetLastError() == 183:

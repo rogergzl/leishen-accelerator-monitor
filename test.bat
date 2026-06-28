@@ -1,17 +1,18 @@
 @echo off
-chcp 65001 >nul
-title 雷神监控 - 开发测试
+title LeiShen Monitor Test
 cd /d "%~dp0"
 
+:menu
+cls
 echo.
-echo ═══════════════════════════════════════════
-echo   雷神加速器监控 - 开发测试
-echo ═══════════════════════════════════════════
+echo ============================================
+echo   LeiShen Monitor - Dev Test
+echo ============================================
 echo.
-echo   [1] 运行 GUI 管理界面
-echo   [2] 运行 daemon (控制台模式)
-echo   [3] 检测加速器是否在运行
-echo   [0] 退出
+echo   [1] Run GUI
+echo   [2] Run daemon (console mode, Ctrl+C stop)
+echo   [3] Check if leigod.exe is running
+echo   [0] Exit
 echo.
 set /p choice="> "
 
@@ -19,21 +20,22 @@ if "%choice%"=="1" goto gui
 if "%choice%"=="2" goto daemon
 if "%choice%"=="3" goto check
 if "%choice%"=="0" goto end
-goto end
+goto menu
 
 :gui
     python "%~dp0leishen_monitor.pyw"
     goto end
 
 :daemon
-    echo 启动 daemon 模式 (Ctrl+C 停止)...
+    echo Starting daemon mode...
+    echo Press Ctrl+C to stop
+    echo.
     python "%~dp0leishen_monitor.pyw" --daemon
     goto end
 
 :check
-    python -c "import subprocess; r=subprocess.run(['tasklist','/fi','STATUS eq RUNNING','/fo','csv','/nh'],capture_output=True,text=True); lines=[l for l in r.stdout.lower().splitlines() if 'leigod' in l]; print('leigod.exe 运行中' if lines else 'leigod.exe 未运行')"
-    echo.
+    python "%~dp0leishen_monitor.pyw" --check
     pause
-    goto end
+    goto menu
 
 :end
