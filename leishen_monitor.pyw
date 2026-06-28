@@ -669,7 +669,6 @@ def gui_main():
         exists = _task_exists()
         running = False
         if exists:
-            # 用 tasklist 检测 daemon 是否真的在跑（避免 schtasks 语言问题）
             r = subprocess.run(
                 ["tasklist", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/fo", "csv", "/nh"],
                 capture_output=True, text=True,
@@ -690,25 +689,33 @@ def gui_main():
         else:
             set_status("○ 未安装", red)
 
-    # ---- 延时刷新（给 daemon 启动时间）----
-    def delayed_refresh():
-        root.after(2000, refresh_status)
+    def refresh_after_delay(seconds: int = 3):
+        """延迟刷新状态，期间显示加载中"""
+        set_status("⏳ 加载中...", yellow)
+        root.after(seconds * 1000, refresh_status)
 
     # ---- 操作 ----
     def do_install():
         if not _ensure_admin():
             _relaunch_as_admin("install")
             return
-        _run_schtask("install")
-        root.after(500, refresh_status)
-        root.after(3000, refresh_status)  # daemon 启动需要时间
+        set_status("⏳ 正在启用...", yellow)
+        result = _run_schtask("install")
+        if result == "installed":
+            refresh_after_delay(3)
+        else:
+            refresh_status()
 
     def do_stop():
         if not _ensure_admin():
             _relaunch_as_admin("stop")
             return
-        _run_schtask("stop")
-        root.after(500, refresh_status)
+        set_status("⏳ 正在停止...", yellow)
+        result = _run_schtask("stop")
+        if result == "stopped":
+            refresh_after_delay(1)
+        else:
+            refresh_status()
 
     def do_uninstall():
         if not mb.askyesno("确认卸载", "确定要完全卸载监控服务吗？", parent=root):
@@ -716,8 +723,12 @@ def gui_main():
         if not _ensure_admin():
             _relaunch_as_admin("uninstall")
             return
-        _run_schtask("uninstall")
-        root.after(500, refresh_status)
+        set_status("⏳ 正在卸载...", yellow)
+        result = _run_schtask("uninstall")
+        if result == "uninstalled":
+            refresh_status()
+        else:
+            refresh_status()
 
     make_btn("启用服务", do_install, green)
     make_btn("停止服务", do_stop, yellow)
