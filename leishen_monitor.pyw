@@ -373,7 +373,6 @@ class Daemon:
         self._running = True
         self._shutdowning = False
         self._shutdown_blocked_this_session = False  # 本开机周期内已拦截过一次
-        self._root = None
         self._hwnd = 0
         self._wmi = None
         self._fs = None
@@ -381,14 +380,17 @@ class Daemon:
         self._fs_grace_until = 0.0
 
     def _on_accel_exit(self, name):
-        if self._root and not self._shutdowning:
-            self._root.after(0, lambda: show_accelerator_exit())
+        log(f"加速器退出: {name}")
+        if not self._shutdowning:
+            threading.Thread(target=lambda: user32.MessageBoxW(0, "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！", "雷神加速器已退出", 0x30), daemon=True).start()
 
     def _on_fs_exit(self, title):
+        label = f"「{title}」" if title else "全屏程序"
+        log(f"全屏退出: {label}")
         self._fs_just_exited = True
         self._fs_grace_until = time.time() + FULLSCREEN_GRACE
-        if self._root and not self._shutdowning:
-            self._root.after(0, lambda: show_fullscreen_exit(title))
+        if not self._shutdowning:
+            threading.Thread(target=lambda: user32.MessageBoxW(0, f"检测到 {label} 已退出。\n\n雷神加速器的时长可能还在消耗中！\n别忘了暂停加速时长哦～", "全屏程序已退出", 0x30), daemon=True).start()
 
     def _shutdown_hook(self):
         GWLP_WNDPROC = -4
@@ -401,14 +403,12 @@ class Daemon:
         def proc(hwnd, msg, wparam, lparam):
             if msg == WM_QUERYENDSESSION:
                 log("WM_QUERYENDSESSION")
-                block = False
-                reason = ""
-
-                # 本周期内只拦截一次 — 已经拦过了就放行
                 if self._shutdown_blocked_this_session:
                     log("本周期已拦截过，放行")
-                    return 1  # TRUE → 允许关机
+                    return 1
 
+                block = False
+                reason = ""
                 if is_accelerator_running():
                     block = True
                     reason = "雷神加速器仍在运行！"
@@ -418,12 +418,18 @@ class Daemon:
 
                 if block:
                     self._shutdowning = True
-                    cancel = show_shutdown_block(reason)
+                    self._shutdown_blocked_this_session = True
+                    rc = user32.MessageBoxW(
+                        hwnd,
+                        "检测到雷神加速器可能仍在后台消耗时长！\n\n点[是]取消关机，先去暂停加速时长\n点[否]我已暂停了，继续关机",
+                        reason,
+                        0x24,  # MB_YESNO | MB_ICONQUESTION
+                    )
                     self._shutdowning = False
-                    self._shutdown_blocked_this_session = True  # 标记已拦截
-                    if cancel:
-                        log("用户取消关机（本周期不再拦截）")
+                    if rc == 6:  # IDYES
+                        log("用户取消关机")
                         return 0
+                    log("用户放行关机")
                     self._fs_just_exited = False
                     ShutdownBlockReasonDestroy(self._hwnd)
                     return 1
@@ -446,41 +452,28 @@ class Daemon:
                 ShutdownBlockReasonDestroy(self._hwnd)
         except Exception:
             pass
-        if self._root:
-            self._root.after(15000, self._update_block)
+        # 30秒后再检查
+        if self._hwnd:
+            user32.SetTimer(self._hwnd, 1, 30000, None)
 
     def run(self):
-        global _ROOT
-        import tkinter as tk
+        global _daemon_instance
+        _daemon_instance = self
+        log(f"Daemon 启动, 加速器={'运行中' if is_accelerator_running() else '未运行'}")
 
-        try:
-            acc = is_accelerator_running()
-            log(f"Daemon 启动, 加速器={'运行中' if acc else '未运行'}")
+        self._hwnd = _create_message_window()
+        log(f"消息窗口创建: {self._hwnd}")
 
-            self._root = tk.Tk()
-            self._root.withdraw()
-            self._root.title("LeiShenMonitor")
-            try:
-                self._root.iconbitmap(_resolve_path("tu.ico"))
-            except Exception:
-                pass
-            _ROOT = self._root
-            self._hwnd = self._root.winfo_id()
+        self._fs = FullscreenWatcher(self._on_fs_exit)
+        self._fs.start()
+        self._wmi = WMIWatcher(PROCESS_NAMES, self._on_accel_exit)
+        self._wmi.start()
 
-            self._fs = FullscreenWatcher(self._on_fs_exit)
-            self._fs.start()
-            self._wmi = WMIWatcher(PROCESS_NAMES, self._on_accel_exit)
-            self._wmi.start()
+        self._shutdown_hook()
+        self._update_block()
 
-            self._shutdown_hook()
-            self._update_block()
-
-            log("进入消息循环")
-            self._root.mainloop()
-        except Exception as e:
-            log(f"Daemon 致命错误: {e}")
-            import traceback
-            log(traceback.format_exc())
+        log("进入消息循环")
+        _message_pump()
 
     def stop(self):
         self._running = False
@@ -492,11 +485,60 @@ class Daemon:
             ShutdownBlockReasonDestroy(self._hwnd)
         except Exception:
             pass
-        if self._root:
-            try:
-                self._root.quit()
-            except Exception:
-                pass
+        if self._hwnd:
+            user32.PostMessageW(self._hwnd, 0x0010, 0, 0)  # WM_CLOSE
+
+
+# ============================================================
+# Win32 消息窗口 + 消息泵（daemon 用，不依赖 tkinter）
+# ============================================================
+def _create_message_window() -> int:
+    """创建纯 Win32 隐藏消息窗口"""
+    hinst = kernel32.GetModuleHandleW(None)
+    wnd_class = ctypes.create_unicode_buffer("LeiShenDaemon")
+    wc = ctypes.wintypes.WNDCLASSW()
+    wc.lpfnWndProc = _daemon_wndproc_ref
+    wc.hInstance = hinst
+    wc.lpszClassName = ctypes.addressof(wnd_class)
+    user32.RegisterClassW(ctypes.byref(wc))
+
+    hwnd = user32.CreateWindowExW(
+        0, wnd_class, "LeiShenDaemon", 0,
+        0, 0, 0, 0, None, None, hinst, None,
+    )
+    return hwnd
+
+
+# 窗口过程回调类型
+_WNDPROC = ctypes.WINFUNCTYPE(
+    ctypes.c_longlong, ctypes.wintypes.HWND, ctypes.wintypes.UINT,
+    ctypes.wintypes.WPARAM, ctypes.wintypes.LPARAM,
+)
+
+_daemon_instance = None  # Daemon 实例引用，窗口过程里用
+
+
+@_WNDPROC
+def _daemon_wndproc(hwnd, msg, wparam, lparam):
+    if msg == 0x0113:  # WM_TIMER
+        if _daemon_instance:
+            _daemon_instance._update_block()
+    elif msg == 0x0010:  # WM_CLOSE
+        user32.DestroyWindow(hwnd)
+    elif msg == 0x0002:  # WM_DESTROY
+        user32.PostQuitMessage(0)
+    return user32.DefWindowProcW(hwnd, msg, wparam, lparam)
+
+
+_daemon_wndproc_ref = _daemon_wndproc  # 防止 GC
+
+
+def _message_pump():
+    """Win32 消息循环"""
+    msg = ctypes.wintypes.MSG()
+    while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:
+        user32.TranslateMessage(ctypes.byref(msg))
+        user32.DispatchMessageW(ctypes.byref(msg))
 
 
 # ============================================================
