@@ -509,27 +509,23 @@ def _ensure_admin() -> bool:
         return False
 
 
-def _relaunch_as_admin():
-    """提权重启"""
+def _relaunch_as_admin(action: str):
+    """提权重启，并传递要执行的动作"""
     ctypes.windll.shell32.ShellExecuteW(
-        None, "runas", SELF_PATH, "", None, 5  # SW_SHOW
+        None, "runas", SELF_PATH, f'--gui-action {action}', None, 5  # SW_SHOW
     )
     sys.exit(0)
 
 
 def _run_schtask(action: str):
-    """执行计划任务管理操作，失败时弹窗提示"""
+    """执行计划任务管理操作"""
     import tkinter.messagebox as mb
 
     if action == "install":
-        # 按需提权
-        if not _ensure_admin():
-            _relaunch_as_admin()
-            return
-
-        # 如果存在先删再建
-        if _task_exists():
+        existed = _task_exists()
+        if existed:
             _schtasks("/delete", "/tn", TASK_NAME, "/f")
+
         r = _schtasks(
             "/create", "/tn", TASK_NAME,
             "/tr", f'"{SELF_PATH}" --daemon',
@@ -539,42 +535,38 @@ def _run_schtask(action: str):
             "/f",
         )
         if r.returncode != 0:
-            mb.showerror("错误", f"计划任务创建失败:\n{r.stderr}")
-            return
-        _schtasks("/run", "/tn", TASK_NAME)
+            mb.showerror("启用失败", f"计划任务创建失败:\n{r.stderr.strip()}")
+            return "failed"
+
+        r2 = _schtasks("/run", "/tn", TASK_NAME)
+        if r2.returncode != 0:
+            mb.showwarning("部分成功", "计划任务已创建，但立即启动失败。\n重启电脑后会自动运行。")
+        else:
+            mb.showinfo("启用成功", "监控服务已注册并启动！\n开机自启，后台静默运行。")
         return "installed"
 
     elif action == "stop":
-        if not _ensure_admin():
-            _relaunch_as_admin()
-            return
         _schtasks("/end", "/tn", TASK_NAME)
-        _schtasks("/change", "/tn", TASK_NAME, "/disable")
-        # 杀残留
-        subprocess.run(
-            ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", "WINDOWTITLE eq LeiShenMonitor", "/f"],
-            capture_output=True,
-        )
+        r = _schtasks("/change", "/tn", TASK_NAME, "/disable")
+        subprocess.run(["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"], capture_output=True)
+        subprocess.run(["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", "WINDOWTITLE eq LeiShenMonitor", "/f"], capture_output=True)
+
+        if r.returncode != 0:
+            mb.showerror("停止失败", "计划任务禁用失败，请尝试以管理员运行。")
+            return "failed"
+        mb.showinfo("已停止", '监控服务已停止，下次开机不会自动启动。\n如需重新启用，请点击"启用服务"。')
         return "stopped"
 
     elif action == "uninstall":
-        if not _ensure_admin():
-            _relaunch_as_admin()
-            return
         _schtasks("/end", "/tn", TASK_NAME)
-        _schtasks("/delete", "/tn", TASK_NAME, "/f")
-        subprocess.run(
-            ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"],
-            capture_output=True,
-        )
-        subprocess.run(
-            ["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", "WINDOWTITLE eq LeiShenMonitor", "/f"],
-            capture_output=True,
-        )
+        r = _schtasks("/delete", "/tn", TASK_NAME, "/f")
+        subprocess.run(["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"], capture_output=True)
+        subprocess.run(["taskkill", "/fi", "IMAGENAME eq pythonw.exe", "/fi", "WINDOWTITLE eq LeiShenMonitor", "/f"], capture_output=True)
+
+        if r.returncode != 0:
+            mb.showerror("卸载失败", "计划任务删除失败，请尝试以管理员运行。")
+            return "failed"
+        mb.showinfo("已卸载", "监控服务已完全卸载。")
         return "uninstalled"
 
 
@@ -667,22 +659,31 @@ def gui_main():
 
     # ---- 操作 ----
     def do_install():
-        result = _run_schtask("install")
-        root.after(800, refresh_status)
+        if not _ensure_admin():
+            _relaunch_as_admin("install")
+            return
+        _run_schtask("install")
+        root.after(500, refresh_status)
 
     def do_stop():
+        if not _ensure_admin():
+            _relaunch_as_admin("stop")
+            return
         _run_schtask("stop")
-        root.after(800, refresh_status)
+        root.after(500, refresh_status)
 
     def do_uninstall():
         if not mb.askyesno("确认卸载", "确定要完全卸载监控服务吗？", parent=root):
             return
+        if not _ensure_admin():
+            _relaunch_as_admin("uninstall")
+            return
         _run_schtask("uninstall")
-        root.after(800, refresh_status)
+        root.after(500, refresh_status)
 
-    make_btn("▶  注册并启动服务", do_install, green)
-    make_btn("⏸  停止服务", do_stop, yellow)
-    make_btn("✕  卸载服务", do_uninstall, red)
+    make_btn("启用服务", do_install, green)
+    make_btn("停止服务", do_stop, yellow)
+    make_btn("卸载服务", do_uninstall, red)
 
     # ---- 底部提示 ----
     tk.Label(
@@ -694,12 +695,12 @@ def gui_main():
     # ---- 初始化 ----
     refresh_status()
 
-    # 如果未安装，弹窗询问是否一键安装
+    # 如果未安装，弹窗询问是否一键启用
     if not _task_exists():
         root.after(500, lambda: (
             mb.askyesno(
                 "首次使用",
-                "监控服务尚未安装。\n\n是否立即注册并启动？\n（将设为开机自启）",
+                "监控服务尚未启用。\n\n是否立即启用？\n（将设为开机自启）",
                 parent=root,
             ) and do_install()
         ))
@@ -711,14 +712,35 @@ def gui_main():
 # 入口
 # ============================================================
 def main():
-    # 单实例保护
+    # --gui-action: 提权后自动执行管理操作
+    gui_action = None
+    for arg in sys.argv[1:]:
+        if arg.startswith("--gui-action"):
+            if "=" in arg:
+                gui_action = arg.split("=", 1)[1]
+            elif sys.argv.index(arg) + 1 < len(sys.argv):
+                gui_action = sys.argv[sys.argv.index(arg) + 1]
+            break
+
+    if gui_action:
+        # 提权执行的快速路径：执行操作 → 弹结果 → 退出
+        import tkinter as tk
+        import tkinter.messagebox as mb
+        if not _ensure_admin():
+            t = tk.Tk()
+            t.withdraw()
+            mb.showerror("权限不足", "需要管理员权限才能执行此操作。")
+            t.destroy()
+            sys.exit(1)
+        _run_schtask(gui_action)
+        sys.exit(0)
+
+    # 单实例保护（仅 GUI 模式）
     mutex = kernel32.CreateMutexW(None, False, "Global\\LeiShenAcceleratorMonitorGUI")
     if kernel32.GetLastError() == 183:
-        # GUI 已有实例 → 如果是 --daemon，说明 daemon 已在运行，静默退出
         if "--daemon" in sys.argv:
             kernel32.CloseHandle(mutex)
             sys.exit(0)
-        # GUI 双击 → 弹提示
         import tkinter as tk
         import tkinter.messagebox as mb
         t = tk.Tk()
@@ -728,7 +750,6 @@ def main():
         sys.exit(0)
 
     if "--daemon" in sys.argv:
-        # Daemon 模式：后台监控
         daemon = Daemon()
         try:
             daemon.run()
@@ -737,7 +758,6 @@ def main():
         finally:
             daemon.stop()
     else:
-        # GUI 模式：管理界面
         gui_main()
 
     kernel32.CloseHandle(mutex)
