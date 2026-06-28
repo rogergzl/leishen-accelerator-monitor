@@ -46,6 +46,11 @@ tasklist /fi "IMAGENAME eq pythonw.exe" /nh 2>nul | findstr "pythonw" >nul 2>&1 
 ) || (
     echo   No pythonw.exe running.
 )
+tasklist /fi "IMAGENAME eq LeiShenMonitor.exe" /nh 2>nul | findstr "LeiShenMonitor" >nul 2>&1 && (
+    echo   WARNING: LeiShenMonitor.exe still running!
+) || (
+    echo   No LeiShenMonitor.exe running.
+)
 
 echo.
 echo ============================================
