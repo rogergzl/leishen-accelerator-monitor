@@ -752,7 +752,9 @@ def main():
             t.destroy()
             sys.exit(1)
         _run_schtask(gui_action)
-        # 不 exit，继续进入下方 GUI 让用户看到状态
+        # 直接进入 GUI，跳过单实例互斥检查（原进程可能还没释放 mutex）
+        gui_main()
+        sys.exit(0)
 
     # --check: 快速检测，无 GUI
     if "--check" in sys.argv:
