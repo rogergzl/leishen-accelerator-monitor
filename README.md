@@ -38,7 +38,7 @@
 
 ## 下载使用
 
-1. 从 [Releases](../../releases) 下载 `雷神时长助手.exe`（约 13MB）
+1. 从 [Releases](../../releases/latest) 下载 `LeiShenMonitor.exe`（约 13MB）
 2. 双击运行，首次会自动弹窗引导安装
 3. 安装后设为开机自启，后台静默运行
 
@@ -96,9 +96,9 @@ LEISHEN_PROCESS_NAMES=leigod.exe,new_name.exe
 pip install pyinstaller
 
 # 打包
-pyinstaller --onefile --windowed --name "雷神时长助手" leishen_monitor.pyw
+pyinstaller --onefile --windowed --name "LeiShenMonitor" leishen_monitor.pyw
 
-# 输出在 dist/雷神时长助手.exe
+# 输出在 dist/LeiShenMonitor.exe
 ```
 
 ## License

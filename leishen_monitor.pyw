@@ -4,7 +4,7 @@
   双击运行 → 管理界面（安装/停止/卸载）
   由计划任务带 --daemon 启动 → 后台监控
 
-打包: pyinstaller --onefile --windowed --name 雷神时长助手 leishen_monitor.pyw
+打包: pyinstaller --onefile --windowed --name LeiShenMonitor leishen_monitor.pyw
 """
 
 import sys
@@ -541,7 +541,7 @@ def _run_schtask(action: str):
         _schtasks("/change", "/tn", TASK_NAME, "/disable")
         # 杀残留
         subprocess.run(
-            ["taskkill", "/fi", "IMAGENAME eq 雷神时长助手.exe", "/f"],
+            ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"],
             capture_output=True,
         )
         subprocess.run(
@@ -557,7 +557,7 @@ def _run_schtask(action: str):
         _schtasks("/end", "/tn", TASK_NAME)
         _schtasks("/delete", "/tn", TASK_NAME, "/f")
         subprocess.run(
-            ["taskkill", "/fi", "IMAGENAME eq 雷神时长助手.exe", "/f"],
+            ["taskkill", "/fi", "IMAGENAME eq LeiShenMonitor.exe", "/f"],
             capture_output=True,
         )
         subprocess.run(
