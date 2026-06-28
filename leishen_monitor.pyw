@@ -47,6 +47,18 @@ def _resolve_path(relative_path: str) -> str:
     return os.path.join(_BASE_DIR, relative_path)
 
 
+def _short_path(path: str) -> str:
+    """获取 Windows 8.3 短路径，避免 schtasks 编码中文路径时出错"""
+    try:
+        buf = ctypes.create_unicode_buffer(512)
+        length = ctypes.windll.kernel32.GetShortPathNameW(path, buf, 512)
+        if length > 0:
+            return buf.value
+    except Exception:
+        pass
+    return path
+
+
 def log(msg: str):
     text = f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] {msg}"
     if LOG_FILE:
@@ -531,9 +543,11 @@ def _run_schtask(action: str):
         if existed:
             _schtasks("/delete", "/tn", TASK_NAME, "/f")
 
+        # 使用短路径避免 schtasks 编码中文路径时出错
+        safe_path = _short_path(SELF_PATH)
         r = _schtasks(
             "/create", "/tn", TASK_NAME,
-            "/tr", f'"{SELF_PATH}" --daemon',
+            "/tr", f'"{safe_path}" --daemon',
             "/sc", "ONLOGON",
             "/ru", os.environ.get("USERNAME", ""),
             "/rl", "HIGHEST",
