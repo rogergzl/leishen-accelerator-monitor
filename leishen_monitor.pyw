@@ -609,8 +609,6 @@ def _run_schtask(action: str):
         r2 = _schtasks("/run", "/tn", TASK_NAME)
         if r2.returncode != 0:
             mb.showwarning("部分成功", "计划任务已创建，但立即启动失败。\n重启电脑后会自动运行。")
-        else:
-            mb.showinfo("启用成功", "监控服务已注册并启动！\n开机自启，后台静默运行。")
         return "installed"
 
     elif action == "stop":
@@ -622,7 +620,6 @@ def _run_schtask(action: str):
         if r.returncode != 0:
             mb.showerror("停止失败", "计划任务禁用失败，请尝试以管理员运行。")
             return "failed"
-        mb.showinfo("已停止", '监控服务已停止，下次开机不会自动启动。\n如需重新启用，请点击"启用服务"。')
         return "stopped"
 
     elif action == "uninstall":
