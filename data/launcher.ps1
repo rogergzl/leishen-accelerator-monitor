@@ -25,18 +25,8 @@ function Install-PythonEmbedded {
     Write-Host "  Python not found, downloading..." -ForegroundColor DarkYellow
     $pythonDir = Join-Path $scriptDir "python"
     $zipFile = Join-Path $scriptDir "python-embed.zip"
-    # 多个镜像自动 fallback
-    try {
-        $winget = Get-Command winget -ErrorAction SilentlyContinue
-        if ($winget) {
-            Write-Host "  Trying winget..." -ForegroundColor DarkGray
-            winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent 2>$null
-            Start-Sleep 5
-            $found = Find-Python
-            if ($found) { return $found }
-        }
-    } catch {}
-    # 国内优先用华为镜像，python.org 可能被墙
+    
+    # 国内优先用华为镜像
     $urls = @(
         "https://mirrors.huaweicloud.com/python/3.12.9/python-3.12.9-embed-amd64.zip",
         "https://registry.npmmirror.com/-/binary/python/3.12.9/python-3.12.9-embed-amd64.zip",
