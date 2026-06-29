@@ -38,8 +38,8 @@ function Install-PythonEmbedded {
     $n = 0
     foreach ($url in $urls) {
         $n++
-        $host = ([uri]$url).Host
-        Write-Host "  [$n/$total] Trying $host ..." -ForegroundColor DarkGray
+        $mirrorHost = ([uri]$url).Host
+        Write-Host "  [$n/$total] Trying $mirrorHost ..." -ForegroundColor DarkGray
         try {
             Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing -TimeoutSec 120
             $downloaded = $true
