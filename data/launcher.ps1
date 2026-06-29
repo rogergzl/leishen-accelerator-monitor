@@ -1,4 +1,4 @@
-# launcher.ps1 - LeiShen Monitor Launcher
+﻿# launcher.ps1 - LeiShen Monitor Launcher
 param()
 
 $scriptDir = $PSScriptRoot
@@ -89,8 +89,10 @@ Write-Host ""
 # 5. Launch
 # ============================================================
 if ($isAdmin) {
+    # Already admin: run directly in this window
+    $cmd = "& `"$python`" `"$script`" --console"
     try {
-        Start-Process -FilePath $python -ArgumentList "`"$script`" --console" -NoNewWindow -Wait
+        Invoke-Expression $cmd
     } catch {
         Write-Host "  [FAIL] $_" -ForegroundColor $R
     }
@@ -98,8 +100,9 @@ if ($isAdmin) {
 } else {
     Write-Host "  [*] Requesting admin rights..." -ForegroundColor $Y
     Write-Host "  [*] This window will close in 3 seconds." -ForegroundColor $DG
+    $argList = "`"$script`" --console"
     try {
-        Start-Process -FilePath $python -ArgumentList "`"$script`" --console" -Verb RunAs
+        Start-Process -FilePath $python -ArgumentList $argList -Verb RunAs
     } catch {
         Write-Host "  [FAIL] UAC cancelled: $_" -ForegroundColor $R
         Read-Host "  Press Enter to exit"
