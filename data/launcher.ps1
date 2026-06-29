@@ -8,16 +8,16 @@ $script = Join-Path $scriptDir "leishen_monitor.pyw"
 # 1. Find / Install Python
 # ============================================================
 function Find-Python {
-    $candidates = @(
+    foreach ($p in @(
         "$scriptDir\python\python.exe",
         "$env:LocalAppData\Programs\Python\Python314\python.exe",
         "$env:LocalAppData\Programs\Python\Python313\python.exe",
         "$env:LocalAppData\Programs\Python\Python312\python.exe",
         "C:\Python314\python.exe", "C:\Python313\python.exe", "C:\Python312\python.exe"
-    )
-    foreach ($p in $candidates) { if (Test-Path $p) { return $p } }
+    )) { if (Test-Path $p) { return $p } }
+    # 排除 Microsoft Store 伪 Python (WindowsApps)
     $cmd = Get-Command python -ErrorAction SilentlyContinue
-    if ($cmd) { return $cmd.Source }
+    if ($cmd -and $cmd.Source -notmatch 'WindowsApps') { return $cmd.Source }
     return $null
 }
 
@@ -89,8 +89,6 @@ Write-Host ""
 # 5. Launch
 # ============================================================
 if ($isAdmin) {
-    # Already admin: run directly in this window
-    Write-Host "  Launching: $python $script --console" -ForegroundColor $DG
     & "$python" "$script" --console 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [FAIL] Python exited with code $LASTEXITCODE" -ForegroundColor $R
