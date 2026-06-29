@@ -90,19 +90,16 @@ Write-Host ""
 # ============================================================
 if ($isAdmin) {
     # Already admin: run directly in this window
-    $cmd = "& `"$python`" `"$script`" --console"
-    try {
-        Invoke-Expression $cmd
-    } catch {
-        Write-Host "  [FAIL] $_" -ForegroundColor $R
+    & $python $script --console 2>&1
+    if ($LASTEXITCODE -ne 0) {
+        Write-Host "  [FAIL] Python exited with code $LASTEXITCODE" -ForegroundColor $R
     }
     Read-Host "  Press Enter to exit"
 } else {
     Write-Host "  [*] Requesting admin rights..." -ForegroundColor $Y
     Write-Host "  [*] This window will close in 3 seconds." -ForegroundColor $DG
-    $argList = "`"$script`" --console"
     try {
-        Start-Process -FilePath $python -ArgumentList $argList -Verb RunAs
+        Start-Process -FilePath $python -ArgumentList "`"$script`" --console" -Verb RunAs
     } catch {
         Write-Host "  [FAIL] UAC cancelled: $_" -ForegroundColor $R
         Read-Host "  Press Enter to exit"
