@@ -1384,9 +1384,13 @@ def console_main():
         _print_status(s, G, Y, R, X)
         print(f"{D}{'-' * 30}{X}")
         try:
+            print("DEBUG: about to ask y/n")  # temp debug
             ans = input("是否立即启用监控服务？(开机自启) [Y/n]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
-            print(f"\n{D}已退出。{X}")
+            print("已退出。")
+            return
+        except Exception as e:
+            print(f"输入异常: {e}")
             return
         if ans in ("", "y", "yes"):
             print(f"\n{D}>>> 执行: 启用服务{X}")
