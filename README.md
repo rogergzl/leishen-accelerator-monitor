@@ -1,46 +1,48 @@
 # LeiShenMonitor
 
-雷神加速器进程监控——退出时弹窗提醒暂停时长，支持全屏不打扰和关机拦截。
+雷神加速器进程监控——退出时弹窗提醒暂停时长，零依赖纯 Python + Win32 API。
 
-## 快速开始
+## 使用
 
-```bash
-# 开发测试
-python data/leishen_monitor.pyw --console
-```
+1. 双击 `运行.bat`
+2. 首次自动询问是否启用 → 输入 `y`
+3. 之后开机自启，后台静默监控
 
-仓库即分发。克隆/下载后双击 `运行.bat` 即可使用。
+## 菜单
 
-## 文件
-
-| 文件 | 用途 |
+| 选项 | 功能 |
 |------|------|
-| `data/leishen_monitor.pyw` | 核心程序 |
-| `data/launcher.ps1` | 启动器（检测/下载 Python） |
-| `运行.bat` | 用户入口 |
-| `完全卸载.bat` | 强制清理 |
-| `setup.bat` | 构建分发文件夹 |
+| 1. 启用/重启 | 注册开机自启 + 启动监控 |
+| 2. 停止 | 暂停监控 |
+| 3. 卸载 | 完全清除 |
+| 4. 日志 | 最近 20 条 |
+| 0. 退出 | |
 
-## 模式
+## 需管理员权限
 
-| 参数 | 行为 |
-|------|------|
-| `--console` | 彩色控制台交互（1启用/2停止/3卸载/4日志/0退出） |
-| `--daemon` | 后台守护进程（schtasks 调用） |
-| `--check` | 输出 leigod.exe 进程状态 |
+右键 `运行.bat` → 以管理员身份运行，或直接双击（自动提权）。
 
-## 架构
+## 无需安装 Python
+
+启动脚本自动检测，未安装则从国内镜像下载 Python 3.12 embedded (~10MB)。
+
+## 文件结构
 
 ```
-运行.bat → data/launcher.ps1 → python --console  # 控制台管理
-                                    ↓
-                    schtasks ONLOGON → pythonw --daemon  # 后台监控
+运行.bat          入口
+完全卸载.bat      强制清理
+data/
+  launcher.ps1    环境检测/下载
+  leishen_monitor.pyw  核心
 ```
 
-- **控制台**: 彩色 ANSI 终端，无需 tkinter
-- **Daemon**: Win32 消息窗口 + `WaitForMultipleObjects` 零 CPU 监控
-- **通信**: PID 文件 (`.daemon.pid`) + 安装路径记录 (`.install_path`)
+## 工作原理
 
-## 零依赖
+- schtasks ONLOGON 注册开机自启
+- WaitForMultipleObjects 零 CPU 监控 leigod.exe
+- 加速器退出 → WTSSendMessage 弹窗提醒
+- 全屏游戏时暂缓弹窗，退出全屏补弹
 
-仅使用 Python 标准库 + `ctypes` Win32 API。无需 `pip install`。
+## 兼容
+
+Windows 10+，Python 3.12+。
