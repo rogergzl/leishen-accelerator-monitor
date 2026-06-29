@@ -96,16 +96,9 @@ if ($isAdmin) {
     }
     Read-Host "  Press Enter to exit"
 } else {
-    Write-Host "  [*] Requesting admin rights..." -ForegroundColor $Y
-    Write-Host "  [*] This window will close in 3 seconds." -ForegroundColor $DG
-    try {
-        Start-Process -FilePath $python -ArgumentList "`"$script`" --console" -Verb RunAs -ErrorAction Stop
-    } catch {
-        Write-Host "  [FAIL] Cannot elevate to admin." -ForegroundColor $R
-        Write-Host "  UAC may be disabled or this account lacks privileges." -ForegroundColor $R
-        Write-Host "  Error: $_" -ForegroundColor $R
-        Read-Host "  Press Enter to exit"
-        exit 1
-    }
-    Start-Sleep 3
+    Write-Host "  [FAIL] Please run as Administrator!" -ForegroundColor $R
+    Write-Host ""
+    Write-Host "  Right-click [Run.bat] -> Run as administrator" -ForegroundColor $Y
+    Write-Host "  Or: this program needs admin rights to install the service." -ForegroundColor $Y
+    Read-Host "  Press Enter to exit"
 }
