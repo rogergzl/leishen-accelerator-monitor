@@ -25,7 +25,7 @@ function Install-PythonEmbedded {
     Write-Host "  Python not found, downloading..." -ForegroundColor DarkYellow
     $pythonDir = Join-Path $scriptDir "python"
     $zipFile = Join-Path $scriptDir "python-embed.zip"
-    $url = "https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip"
+    # 多个镜像自动 fallback
     try {
         $winget = Get-Command winget -ErrorAction SilentlyContinue
         if ($winget) {
@@ -36,9 +36,28 @@ function Install-PythonEmbedded {
             if ($found) { return $found }
         }
     } catch {}
+    # 国内优先用华为镜像，python.org 可能被墙
+    $urls = @(
+        "https://mirrors.huaweicloud.com/python/3.12.9/python-3.12.9-embed-amd64.zip",
+        "https://registry.npmmirror.com/-/binary/python/3.12.9/python-3.12.9-embed-amd64.zip",
+        "https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip"
+    )
     Write-Host "  Downloading Python (~10MB)..." -ForegroundColor DarkGray
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing
+    $downloaded = $false
+    foreach ($url in $urls) {
+        try {
+            Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing -TimeoutSec 120
+            $downloaded = $true
+            break
+        } catch {
+            Write-Host "  Mirror failed: $url" -ForegroundColor DarkGray
+        }
+    }
+    if (-not $downloaded) {
+        Write-Host "  [FAIL] All download mirrors failed." -ForegroundColor $R
+        return $null
+    }
     Write-Host "  Extracting..." -ForegroundColor DarkGray
     Expand-Archive -Path $zipFile -DestinationPath $pythonDir -Force
     Remove-Item $zipFile -Force
