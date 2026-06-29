@@ -549,7 +549,7 @@ class Daemon:
         elif not self._shutdowning:
             threading.Thread(target=lambda: _daemon_message_box(
                 "雷神加速器已退出",
-                "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！",
+                "请确认是否已暂停加速时长！\n如果忘记暂停，时长会继续消耗！",
                 0x00040,  # MB_OK | MB_ICONINFORMATION
             ), daemon=True).start()
 
@@ -565,13 +565,13 @@ class Daemon:
             log("全屏退出，补弹加速器退出提醒")
             threading.Thread(target=lambda: _daemon_message_box(
                 "雷神加速器已退出",
-                "检测到雷神加速器已经退出！\n\n请确认是否已暂停加速时长？\n如果忘记暂停，时长会继续消耗！",
+                "请确认是否已暂停加速时长！\n如果忘记暂停，时长会继续消耗！",
                 0x00040,
             ), daemon=True).start()
         elif not self._shutdowning:
             threading.Thread(target=lambda: _daemon_message_box(
                 "全屏程序已退出",
-                f"检测到 {label} 已退出。\n\n雷神加速器的时长可能还在消耗中！\n别忘了暂停加速时长哦～",
+                f"{label} 已退出。\n雷神加速器时长可能还在消耗，别忘了暂停哦！",
                 0x00040,
             ), daemon=True).start()
 
