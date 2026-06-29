@@ -105,9 +105,9 @@ Write-Host ""
 # 5. Launch
 # ============================================================
 if ($isAdmin) {
-    # 用 cmd /c start 在新窗口启动，保证 stdin 正常
-    $cmdArgs = "/c start `"LeiShen Monitor`" /wait `"$python`" `"$script`" --console"
-    Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -Wait
+    # 用 cmd /c 启动（不用 & 直接调，避免 2>&1 重定向导致 stdin 关闭）
+    $cmdArgs = "/c `"$python`" `"$script`" --console"
+    Start-Process -FilePath "cmd.exe" -ArgumentList $cmdArgs -NoNewWindow -Wait
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [FAIL] Python exited with code $LASTEXITCODE" -ForegroundColor $R
     }
