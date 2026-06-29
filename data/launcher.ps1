@@ -42,25 +42,32 @@ function Install-PythonEmbedded {
         "https://registry.npmmirror.com/-/binary/python/3.12.9/python-3.12.9-embed-amd64.zip",
         "https://www.python.org/ftp/python/3.12.9/python-3.12.9-embed-amd64.zip"
     )
-    Write-Host "  Downloading Python (~10MB)..." -ForegroundColor DarkGray
     [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
     $downloaded = $false
+    $total = $urls.Count
+    $n = 0
     foreach ($url in $urls) {
+        $n++
+        $host = ([uri]$url).Host
+        Write-Host "  [$n/$total] Trying $host ..." -ForegroundColor DarkGray
         try {
             Invoke-WebRequest -Uri $url -OutFile $zipFile -UseBasicParsing -TimeoutSec 120
             $downloaded = $true
+            Write-Host "  [OK] Download complete." -ForegroundColor Green
             break
         } catch {
-            Write-Host "  Mirror failed: $url" -ForegroundColor DarkGray
+            Write-Host "  [FAIL] $_" -ForegroundColor DarkGray
         }
     }
     if (-not $downloaded) {
-        Write-Host "  [FAIL] All download mirrors failed." -ForegroundColor $R
+        Write-Host "  [FAIL] All mirrors failed. Check your network." -ForegroundColor Red
         return $null
     }
-    Write-Host "  Extracting..." -ForegroundColor DarkGray
+    
+    Write-Host "  Extracting Python to $pythonDir ..." -ForegroundColor DarkGray
     Expand-Archive -Path $zipFile -DestinationPath $pythonDir -Force
     Remove-Item $zipFile -Force
+    Write-Host "  [OK] Python installed." -ForegroundColor Green
     $pthFile = Join-Path $pythonDir "python312._pth"
     if (Test-Path $pthFile) {
         (Get-Content $pthFile) -replace '#import site', 'import site' | Set-Content $pthFile
