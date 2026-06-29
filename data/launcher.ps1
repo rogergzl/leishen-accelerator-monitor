@@ -99,10 +99,13 @@ if ($isAdmin) {
     Write-Host "  [*] Requesting admin rights..." -ForegroundColor $Y
     Write-Host "  [*] This window will close in 3 seconds." -ForegroundColor $DG
     try {
-        Start-Process -FilePath $python -ArgumentList "`"$script`" --console" -Verb RunAs
+        Start-Process -FilePath $python -ArgumentList "`"$script`" --console" -Verb RunAs -ErrorAction Stop
     } catch {
-        Write-Host "  [FAIL] UAC cancelled: $_" -ForegroundColor $R
+        Write-Host "  [FAIL] Cannot elevate to admin." -ForegroundColor $R
+        Write-Host "  UAC may be disabled or this account lacks privileges." -ForegroundColor $R
+        Write-Host "  Error: $_" -ForegroundColor $R
         Read-Host "  Press Enter to exit"
+        exit 1
     }
     Start-Sleep 3
 }
