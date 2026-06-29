@@ -1384,7 +1384,7 @@ def console_main():
         _print_status(s, G, Y, R, X)
         print(f"{D}{'-' * 30}{X}")
         try:
-            ans = input(f"是否立即启用监控服务？(开机自启) {D}[Y/n]:{X} ").strip().lower()
+            ans = input("是否立即启用监控服务？(开机自启) [Y/n]: ").strip().lower()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{D}已退出。{X}")
             return
@@ -1405,7 +1405,7 @@ def console_main():
         print(f"{D}{'-' * 30}{X}")
 
         try:
-            choice = input(f"{H}请选择 [0-4]:{X} ").strip()
+            choice = input("请选择 [0-4]: ").strip()
         except (EOFError, KeyboardInterrupt):
             print(f"\n{D}已退出。{X}")
             break
@@ -1421,7 +1421,7 @@ def console_main():
             _print_result(result, G, R, X)
 
         elif choice == "3":
-            confirm = input(f"\n确定要完全卸载监控服务吗？ {D}[y/N]:{X} ").strip().lower()
+            confirm = input("\n确定要完全卸载监控服务吗？ [y/N]: ").strip().lower()
             if confirm != 'y':
                 print(f"{D}已取消。{X}")
                 continue
