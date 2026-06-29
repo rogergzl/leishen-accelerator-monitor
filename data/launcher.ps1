@@ -90,7 +90,8 @@ Write-Host ""
 # ============================================================
 if ($isAdmin) {
     # Already admin: run directly in this window
-    & $python $script --console 2>&1
+    Write-Host "  Launching: $python $script --console" -ForegroundColor $DG
+    & "$python" "$script" --console 2>&1
     if ($LASTEXITCODE -ne 0) {
         Write-Host "  [FAIL] Python exited with code $LASTEXITCODE" -ForegroundColor $R
     }
